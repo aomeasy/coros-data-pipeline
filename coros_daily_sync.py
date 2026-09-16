@@ -26,6 +26,7 @@ def _run(*args, stdin_input=None):
         input=stdin_input,
         capture_output=True,
         text=True,
+        shell=True,
     )
 
 
