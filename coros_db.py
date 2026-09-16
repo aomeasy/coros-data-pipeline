@@ -13,7 +13,8 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-DB_PATH = Path.home() / "AppData" / "Local" / "hermes" / "coros_cache.db"
+# ใช้ directory ของ script เป็น base — รันใน GitHub Actions เท่านั้น
+DB_PATH = Path(__file__).parent / "coros_cache.db"
 
 def get_conn():
     """เปิด connection ไปยัง SQLite database"""
