@@ -2,13 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 COROS Data Daily Sync
-รันทุกวันเพื่อดึงข้อมูลจาก COROS-MCP แล้วเก็บใน cache database
+รันทุกวันผ่าน GitHub Actions — ดึงข้อมูลจาก COROS-MCP แล้วเก็บใน SQLite
 """
 import sys
 import os
 import subprocess
 import json
-import shutil
 from datetime import datetime, timedelta
 
 # ใช้ directory ของ script เป็น base
@@ -16,27 +15,39 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 import coros_db
 
-# หา coros-mcp จาก PATH ก่อน ถ้าไม่เจอค่อยใช้ node ตรงๆ
-COROS_MCP_BIN = shutil.which("coros-mcp") or "coros-mcp"
+COROS_MCP_BIN = "coros-mcp"
 
-def _run(*args):
-    """เรียก coros-mcp command"""
+
+def _run(*args, stdin_input=None):
     cmd = [COROS_MCP_BIN] + list(args)
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(
+        cmd,
+        input=stdin_input,
+        capture_output=True,
+        text=True,
+    )
+
+
+def login(email, password):
+    result = _run(
+        "login", "--legacy", "--username", email,
+        stdin_input=password + "\n",
+    )
+    return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
+
 
 def check_login():
-    """เช็คสถานะ login"""
     result = _run("login-status")
     if result.returncode != 0:
-        return False, f"COROS-MCP error: {result.stderr.strip()}"
-    if "no pending login session" in result.stdout:
-        return False, "Not logged in"
-    return True, "Logged in"
+        return False
+    return "logged in" in result.stdout.lower() or "no pending login" not in result.stdout
+
 
 def sync_activities():
-    """ดึง activity ล่าสุด 5 อันแล้วเก็บ"""
-    result = _run("call-tool", "--tool", "querySportRecords",
-                  "--arguments-json", json.dumps({"sport": "running", "limit": 5}))
+    result = _run(
+        "call-tool", "--tool", "querySportRecords",
+        "--arguments-json", json.dumps({"sport": "running", "limit": 5}),
+    )
     if result.returncode != 0:
         return False, f"Error: {result.stderr}"
     try:
@@ -49,12 +60,14 @@ def sync_activities():
         count += 1
     return True, f"Synced {count} activities"
 
+
 def sync_sleep(days=7):
-    """ดึง sleep ล่าสุด 7 วันแล้วเก็บ"""
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-    result = _run("call-tool", "--tool", "queryDailyHealthData",
-                  "--arguments-json", json.dumps({"startDate": start_date, "endDate": end_date}))
+    result = _run(
+        "call-tool", "--tool", "queryDailyHealthData",
+        "--arguments-json", json.dumps({"startDate": start_date, "endDate": end_date}),
+    )
     if result.returncode != 0:
         return False, f"Error: {result.stderr}"
     try:
@@ -69,24 +82,23 @@ def sync_sleep(days=7):
         count += 1
     return True, f"Synced {count} daily health records"
 
+
 def main():
     ts = datetime.now().isoformat()
     print(f"[{ts}] Starting COROS daily sync...")
 
-    # ถ้ามี env COROS_EMAIL + COROS_PASSWORD → login ก่อน
     email = os.environ.get("COROS_EMAIL")
     password = os.environ.get("COROS_PASSWORD")
-    if email and password:
-        login_result = _run("login", "--email", email, "--password", password)
-        print(f"[{ts}] Login: {login_result.stdout.strip()}")
-        if login_result.returncode != 0:
-            print(f"[{ts}] Login failed: {login_result.stderr.strip()}")
-            return 1
-
-    logged_in, login_msg = check_login()
-    if not logged_in:
-        print(f"[{ts}] SKIP: {login_msg}")
+    if not email or not password:
+        print(f"[{ts}] SKIP: COROS_EMAIL and COROS_PASSWORD required")
         return 1
+
+    print(f"[{ts}] Logging in as {email}...")
+    ok, stdout_msg, stderr_msg = login(email, password)
+    if not ok:
+        print(f"[{ts}] Login failed: {stderr_msg or stdout_msg}")
+        return 1
+    print(f"[{ts}] Login: {stdout_msg}")
 
     ok, msg = sync_activities()
     print(f"[{ts}] Activities: {msg}")
@@ -96,6 +108,7 @@ def main():
 
     print(f"[{ts}] Sync complete")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
