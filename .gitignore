@@ -1,0 +1,18 @@
+# Database (sensitive/local data)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE / OS
+.vscode/
+.idea/
+Thumbs.db
+
+# COROS-MCP node_modules (if installed locally)
+node_modules/
