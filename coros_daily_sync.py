@@ -15,11 +15,12 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 import coros_db
 
-COROS_MCP_BIN = "coros-mcp"
+COROS_MCP_BIN = "npx"
 
 
 def _run(*args, stdin_input=None):
-    cmd = [COROS_MCP_BIN] + list(args)
+    """เรียก coros-mcp command"""
+    cmd = ["npx", "coros-mcp"] + list(args)
     return subprocess.run(
         cmd,
         input=stdin_input,
