@@ -80,6 +80,21 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_activities_start ON activities(start_time);
     CREATE INDEX IF NOT EXISTS idx_sleep_date ON sleep_data(date);
     CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_health(date);
+    CREATE TABLE IF NOT EXISTS journal_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT UNIQUE NOT NULL,
+        alcohol_units INTEGER DEFAULT 0,
+        caffeine_after_14 INTEGER DEFAULT 0,
+        late_meal INTEGER DEFAULT 0,
+        screen_before_bed_min INTEGER DEFAULT 0,
+        stress_level INTEGER DEFAULT 0,
+        exercise_evening INTEGER DEFAULT 0,
+        room_temp_hot INTEGER DEFAULT 0,
+        notes TEXT DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_date ON journal_entries(date);
     """)
     conn.close()
 
@@ -255,5 +270,52 @@ def get_db_stats():
         "db_path": str(DB_PATH)
     }
 
+def store_journal(data):
+    """
+    เก็บ journal entry
+    data: dict ของ journal entry
+    """
+    now = datetime.now().isoformat()
+    conn = get_conn()
+    conn.execute("""
+    INSERT OR REPLACE INTO journal_entries
+    (date, alcohol_units, caffeine_after_14, late_meal,
+     screen_before_bed_min, stress_level, exercise_evening,
+     room_temp_hot, notes, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        data.get("date"),
+        data.get("alcohol_units", 0),
+        data.get("caffeine_after_14", 0),
+        data.get("late_meal", 0),
+        data.get("screen_before_bed_min", 0),
+        data.get("stress_level", 0),
+        data.get("exercise_evening", 0),
+        data.get("room_temp_hot", 0),
+        data.get("notes", ""),
+        now, now
+    ))
+    conn.commit()
+    conn.close()
+
+def get_journal_by_date(date):
+    """ดึง journal ตาม date"""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM journal_entries WHERE date = ?", (date,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def get_all_journals():
+    """ดึง journal ทั้งหมด"""
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM journal_entries ORDER BY date DESC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 # เริ่มสร้างตารางตอน import
 init_db()
+
