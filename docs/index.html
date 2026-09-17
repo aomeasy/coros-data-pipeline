@@ -3,154 +3,540 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>COROS Data Pipeline</title>
+<title>COROS Dashboard</title>
 <style>
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f8f9fa;
+  --bg-card: #ffffff;
+  --text-primary: #1a1a2e;
+  --text-secondary: #6c757d;
+  --accent: #e94560;
+  --accent-light: #ff6b6b;
+  --success: #28a745;
+  --warning: #ffc107;
+  --info: #17a2b8;
+  --border: #e9ecef;
+  --shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Tahoma, sans-serif; background: #0f0f1a; color: #e0e0e0; min-height: 100vh; }
-.header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 24px 40px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2a4a; }
-.header h1 { font-size: 24px; color: #e94560; font-weight: 700; }
-.header .subtitle { font-size: 12px; color: #888; margin-top: 4px; }
-.nav { display: flex; gap: 8px; }
-.nav button { background: #1a1a2e; color: #ccc; border: 1px solid #2a2a4a; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; transition: all .2s; }
-.nav button:hover { background: #e94560; color: #fff; border-color: #e94560; }
-.nav button.active { background: #e94560; color: #fff; border-color: #e94560; }
-.container { padding: 30px 40px; max-width: 1200px; margin: 0 auto; }
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 30px; }
-.stat-card { background: #1a1a2e; border: 1px solid #2a2a4a; border-radius: 12px; padding: 20px; text-align: center; }
-.stat-card .number { font-size: 36px; font-weight: 700; color: #e94560; }
-.stat-card .label { font-size: 12px; color: #888; margin-top: 4px; text-transform: uppercase; letter-spacing: 1px; }
-.section { display: none; }
-.section.active { display: block; }
-h2 { font-size: 18px; margin-bottom: 16px; color: #e94560; }
-table { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 30px; background: #1a1a2e; border-radius: 12px; overflow: hidden; border: 1px solid #2a2a4a; }
-th { background: #16213e; padding: 12px 16px; text-align: left; font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid #2a2a4a; }
-td { padding: 12px 16px; border-top: 1px solid #232745; font-size: 13px; }
-tr:hover { background: #1f1f35; }
-.badge { background: #533483; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
-.badge.run { background: #e94560; }
-.badge.sleep { background: #533483; }
-.badge.health { background: #0f3460; }
-.empty { text-align: center; padding: 60px 20px; color: #555; font-size: 16px; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: #1a1a2e;
+  color: #fff;
+  min-height: 100vh;
+  position: fixed;
+  left: 0;
+  top: 0;
+  padding: 24px 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+}
+
+.sidebar-brand {
+  padding: 0 24px 24px;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  margin-bottom: 16px;
+}
+
+.sidebar-brand h1 {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sidebar-brand .subtitle {
+  font-size: 11px;
+  color: rgba(255,255,255,0.5);
+  margin-top: 4px;
+}
+
+.sidebar-nav {
+  list-style: none;
+  flex: 1;
+}
+
+.sidebar-nav li {
+  margin: 2px 12px;
+}
+
+.sidebar-nav a {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  color: rgba(255,255,255,0.7);
+  text-decoration: none;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.sidebar-nav a:hover,
+.sidebar-nav a.active {
+  background: rgba(255,255,255,0.1);
+  color: #fff;
+}
+
+.sidebar-nav a.active {
+  background: var(--accent);
+}
+
+.sidebar-nav .icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sidebar-footer {
+  padding: 16px 24px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  font-size: 11px;
+  color: rgba(255,255,255,0.4);
+}
+
+/* Main content */
+.main {
+  margin-left: 260px;
+  flex: 1;
+  padding: 24px 32px;
+  max-width: 1200px;
+}
+
+/* Header */
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.page-header .breadcrumb {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* Metric cards */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.metric-card {
+  background: var(--bg-card);
+  border-radius: 12px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.metric-card .label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.metric-card .value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.metric-card .unit {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.metric-card .change {
+  font-size: 12px;
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.metric-card .change.positive { color: var(--success); }
+.metric-card .change.negative { color: var(--accent); }
+.metric-card .change.neutral { color: var(--text-secondary); }
+
+/* Dashboard sections */
+.dashboard-section {
+  margin-bottom: 32px;
+}
+
+.dashboard-section h3 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 12px;
+}
+
+/* Activity list */
+.activity-list {
+  background: var(--bg-card);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.activity-item {
+  display: flex;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+
+.activity-item:last-child { border-bottom: none; }
+
+.activity-icon {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.activity-info { flex: 1; }
+
+.activity-info .title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.activity-info .meta {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.activity-stats {
+  display: flex;
+  gap: 24px;
+}
+
+.activity-stat {
+  text-align: center;
+}
+
+.activity-stat .val {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.activity-stat .lbl {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+/* Tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--bg-card);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.data-table thead {
+  background: var(--bg-secondary);
+}
+
+.data-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.data-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.data-table tr:last-child td { border-bottom: none; }
+.data-table tr:hover { background: var(--bg-secondary); }
+
+/* Badge */
+.badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #fff;
+}
+
+.badge.success { background: var(--success); }
+.badge.warning { background: var(--warning); color: #1a1a2e; }
+.badge.info { background: var(--info); }
+
+/* Progress bar */
+.progress {
+  width: 100%;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+/* Two column layout */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+}
+
+/* Sleep bars */
+.sleep-bar {
+  display: flex;
+  height: 24px;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 8px;
+}
+
+.sleep-bar .deep { background: #533483; }
+.sleep-bar .light { background: #17a2b8; }
+.sleep-bar .rem { background: #ffc107; }
+.sleep-bar .awake { background: var(--accent); }
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+  color: var(--text-secondary);
+}
+
+.empty-state .icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.empty-state h3 {
+  font-size: 16px;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.empty-state p {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
 </style>
 </head>
 <body>
-<div class="header">
-<div>
-<h1>COROS Data Pipeline</h1>
-<div class="subtitle">Local data pipeline for COROS smartwatch · Updated: <span id="updated">-</span></div>
+<!-- Sidebar -->
+<aside class="sidebar">
+<div class="sidebar-brand">
+<h1>COROS</h1>
+<div class="subtitle">Training Hub Dashboard</div>
 </div>
-<div class="nav">
-<button onclick="showSection('activities')" id="btn-activities" class="active">Activities</button>
-<button onclick="showSection('sleep')" id="btn-sleep">Sleep</button>
-<button onclick="showSection('daily')" id="btn-daily">Daily Health</button>
+<ul class="sidebar-nav">
+<li><a href="#" class="active" onclick="showSection('dashboard')"><span class="icon">D</span>Dashboard</a></li>
+<li><a href="#" onclick="showSection('activities')"><span class="icon">A</span>Activities</a></li>
+<li><a href="#" onclick="showSection('sleep')"><span class="icon">S</span>Sleep</a></li>
+<li><a href="#" onclick="showSection('health')"><span class="icon">H</span>Health</a></li>
+</ul>
+<div class="sidebar-footer">
+Data syncs daily at 9:00 AM<br>
+Last updated: <span id="lastUpdate">-</span>
 </div>
-</div>
-<div class="container">
-<div class="stats">
-<div class="stat-card"><div class="number" id="s-acts">0</div><div class="label">Activities</div></div>
-<div class="stat-card"><div class="number" id="s-sleep">0</div><div class="label">Sleep Records</div></div>
-<div class="stat-card"><div class="number" id="s-daily">0</div><div class="label">Daily Health</div></div>
-</div>
-<div id="activities" class="section active">
-<h2>Recent Activities</h2>
-<div id="t-activities"></div>
-</div>
-<div id="sleep" class="section">
-<h2>Sleep Data</h2>
-<div id="t-sleep"></div>
-</div>
-<div id="daily" class="section">
-<h2>Daily Health</h2>
-<div id="t-daily"></div>
-</div>
-</div>
+</aside>
+
+<!-- Main content -->
+<main class="main" id="mainContent">
+<!-- Filled by JS -->
+</main>
+
 <script>
 function fmtPace(s){if(!s)return"-";var m=Math.floor(s/60),sec=Math.floor(s%60);return m+":"+(sec<10?"0":"")+sec;}
-function fmtDur(s){if(!s)return"-";var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?h+"h "+m+"m":m+"m";}
+function fmtDuration(s){if(!s)return"-";var h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h>0?h+"h "+m+"m":m+"m";}
 function fmtDist(m){if(!m)return"-";return m>=1000?(m/1000).toFixed(2)+" km":m.toFixed(0)+" m";}
 function fmtDate(s){if(!s)return"-";return s.toString().replace("T"," ").substring(0,16);}
-function esc(s){if(s==null)return"-";return String(s).replace(/</g,"&lt;").replace(/>/g,"&gt;");}
-
-function renderTable(cols, rows){
-if(!rows||rows.length===0) return '<div class="empty">No data yet — waiting for first sync...</div>';
-var h='<table><thead><tr>';
-cols.forEach(c=>h+='<th>'+c+'</th>');
-h+='</tr></thead><tbody>';
-rows.forEach(r=>{
-h+='<tr>';
-cols.forEach(c=>{
-var v=r[c]; if(v==null) v="-";
-h+='<td>'+esc(v)+'</td>';
-});
-h+='</tr>';
-});
-h+='</tbody></table>';
-return h;
-}
 
 function showSection(n){
-document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));
-document.querySelectorAll('.nav button').forEach(b=>b.classList.remove('active'));
-document.getElementById(n).classList.add('active');
-document.getElementById('btn-'+n).classList.add('active');
+document.querySelectorAll('.sidebar-nav a').forEach(a=>a.classList.remove('active'));
+event.target.classList.add('active');
+render(n);
+}
+
+function renderDashboard(d){
+var acts=d.activities||[];
+var sleeps=d.sleep||[];
+var daily=d.daily||[];
+
+var totalDist=acts.reduce((s,a)=>s+(a.distance_m||0),0);
+var totalDur=acts.reduce((s,a)=>s+(a.duration_s||0),0);
+var avgPace=acts.length?Math.round(acts.reduce((s,a)=>s+(a.avg_pace_s||0),0)/acts.length):0;
+var totalSteps=daily.reduce((s,x)=>s+(x.steps||0),0);
+var avgStress=daily.length?Math.round(daily.reduce((s,x)=>s+(x.stress_score||0),0)/daily.length):0;
+var totalCal=daily.reduce((s,x)=>s+(x.calories_burned||0),0);
+
+var html='<div class="page-header"><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>';
+
+// Metrics
+html+='<div class="metrics-grid">';
+html+='<div class="metric-card"><div class="label">Total Distance</div><div class="value">'+(totalDist/1000).toFixed(1)+'<span class="unit"> km</span></div><div class="change neutral">from '+acts.length+' activities</div></div>';
+html+='<div class="metric-card"><div class="label">Total Time</div><div class="value">'+fmtDuration(totalDur)+'</div><div class="change neutral">training time</div></div>';
+html+='<div class="metric-card"><div class="label">Avg Pace</div><div class="value">'+fmtPace(avgPace)+'</div><div class="change neutral">per km</div></div>';
+html+='<div class="metric-card"><div class="label">Total Steps</div><div class="value">'+totalSteps.toLocaleString()+'</div><div class="change neutral">this week</div></div>';
+html+='<div class="metric-card"><div class="label">Avg Stress</div><div class="value">'+avgStress+'</div><div class="change neutral">daily average</div></div>';
+html+='<div class="metric-card"><div class="label">Calories</div><div class="value">'+totalCal.toLocaleString()+'</div><div class="change neutral">burned this week</div></div>';
+html+='</div>';
+
+// Recent activities
+html+='<div class="dashboard-section"><h3>Recent Activities</h3><div class="activity-list">';
+if(acts.length===0){
+html+='<div class="empty-state"><div class="icon">🏃</div><h3>No activities yet</h3><p>Your synced activities will appear here</p></div>';
+}else{
+acts.slice(0,5).forEach(a=>{
+html+='<div class="activity-item">';
+html+='<div class="activity-icon">'+(a.sport_type==100?'R':'T')+'</div>';
+html+='<div class="activity-info"><div class="title">Outdoor Run</div><div class="meta">'+fmtDate(a.start_time)+'</div></div>';
+html+='<div class="activity-stats">';
+html+='<div class="activity-stat"><div class="val">'+fmtDist(a.distance_m)+'</div><div class="lbl">Distance</div></div>';
+html+='<div class="activity-stat"><div class="val">'+fmtDuration(a.duration_s)+'</div><div class="lbl">Time</div></div>';
+html+='<div class="activity-stat"><div class="val">'+fmtPace(a.avg_pace_s)+'</div><div class="lbl">Pace</div></div>';
+html+='<div class="activity-stat"><div class="val">'+a.avg_hr+'</div><div class="lbl">HR</div></div>';
+html+='</div></div>';
+});
+}
+html+='</div></div>';
+
+// Sleep overview
+html+='<div class="dashboard-section"><h3>Sleep Overview</h3>';
+if(sleeps.length===0){
+html+='<div class="empty-state"><div class="icon">😴</div><h3>No sleep data yet</h3></div>';
+}else{
+html+='<table class="data-table"><thead><tr><th>Date</th><th>Duration</th><th>Deep</th><th>Light</th><th>REM</th><th>Awake</th><th>HRV</th></tr></thead><tbody>';
+sleeps.forEach(s=>{
+html+='<tr><td>'+s.date+'</td><td>'+fmtDuration((s.duration_min||0)*60)+'</td><td>'+(s.deep_sleep_pct||'-')+'%</td><td>'+(s.light_sleep_pct||'-')+'%</td><td>'+(s.rem_sleep_pct||'-')+'%</td><td>'+(s.awake_min||'-')+' min</td><td>'+(s.hrv||'-')+'</td></tr>';
+});
+html+='</tbody></table>';
+}
+html+='</div>';
+
+return html;
+}
+
+function renderActivities(d){
+var acts=d.activities||[];
+var html='<div class="page-header"><h2>Activities</h2><div class="breadcrumb">Training / Activities</div></div>';
+if(acts.length===0){
+html+='<div class="empty-state"><div class="icon">🏃</div><h3>No activities yet</h3></div>';
+}else{
+html+='<table class="data-table"><thead><tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Pace</th><th>HR</th><th>Calories</th></tr></thead><tbody>';
+acts.forEach(a=>{
+html+='<tr><td>'+fmtDate(a.start_time)+'</td><td><span class="badge">'+a.sport_type+'</span></td><td>'+fmtDist(a.distance_m)+'</td><td>'+fmtDuration(a.duration_s)+'</td><td>'+fmtPace(a.avg_pace_s)+' /km</td><td>'+(a.avg_hr||'-')+' bpm</td><td>'+(a.caloriesBurned||'-')+'</td></tr>';
+});
+html+='</tbody></table>';
+}
+return html;
+}
+
+function renderSleep(d){
+var sleeps=d.sleep||[];
+var html='<div class="page-header"><h2>Sleep</h2><div class="breadcrumb">Recovery / Sleep</div></div>';
+if(sleeps.length===0){
+html+='<div class="empty-state"><div class="icon">😴</div><h3>No sleep data yet</h3></div>';
+}else{
+html+='<table class="data-table"><thead><tr><th>Date</th><th>Score</th><th>Duration</th><th>Deep %</th><th>Light %</th><th>REM %</th><th>Awake</th><th>HRV</th><th>Resting HR</th></tr></thead><tbody>';
+sleeps.forEach(s=>{
+html+='<tr><td>'+s.date+'</td><td>'+(s.sleep_score||'-')+'</td><td>'+fmtDuration((s.duration_min||0)*60)+'</td><td>'+(s.deep_sleep_pct||'-')+'%</td><td>'+(s.light_sleep_pct||'-')+'%</td><td>'+(s.rem_sleep_pct||'-')+'%</td><td>'+(s.awake_min||'-')+' min</td><td>'+(s.hrv||'-')+'</td><td>'+(s.resting_hr||'-')+'</td></tr>';
+});
+html+='</tbody></table>';
+}
+return html;
+}
+
+function renderHealth(d){
+var daily=d.daily||[];
+var html='<div class="page-header"><h2>Daily Health</h2><div class="breadcrumb">Health / Daily Metrics</div></div>';
+if(daily.length===0){
+html+='<div class="empty-state"><div class="icon">💓</div><h3>No health data yet</h3></div>';
+}else{
+html+='<table class="data-table"><thead><tr><th>Date</th><th>Sleep Score</th><th>Steps</th><th>Stress</th><th>Avg HR</th><th>Max HR</th><th>Calories</th></tr></thead><tbody>';
+daily.forEach(x=>{
+html+='<tr><td>'+x.date+'</td><td><span class="badge info">'+(x.sleep_score||'-')+'</span></td><td>'+(x.steps||0).toLocaleString()+'</td><td>'+(x.stress_score||'-')+'</td><td>'+(x.avg_hr||'-')+'</td><td>'+(x.max_hr||'-')+'</td><td>'+(x.calories_burned||0).toLocaleString()+'</td></tr>';
+});
+html+='</tbody></table>';
+}
+return html;
+}
+
+function render(section){
+var data=window._corosData||{activities:[],sleep:[],daily:[]};
+switch(section){
+case 'dashboard': document.getElementById('mainContent').innerHTML=renderDashboard(data); break;
+case 'activities': document.getElementById('mainContent').innerHTML=renderActivities(data); break;
+case 'sleep': document.getElementById('mainContent').innerHTML=renderSleep(data); break;
+case 'health': document.getElementById('mainContent').innerHTML=renderHealth(data); break;
+}
 }
 
 async function load(){
 try{
 var r=await fetch('data.json?t='+Date.now());
-if(!r.ok) throw new Error('data.json not found');
-var d=await r.json();
+if(!r.ok) throw new Error('not found');
+window._corosData=await r.json();
+document.getElementById('lastUpdate').textContent=new Date().toLocaleString('th-TH');
 }catch(e){
-document.getElementById('t-activities').innerHTML='<div class="empty">data.json not found — GitHub Actions will generate it on next sync</div>';
-document.getElementById('t-sleep').innerHTML='';
-document.getElementById('t-daily').innerHTML='';
-return;
+document.getElementById('lastUpdate').textContent='No data yet';
 }
-
-document.getElementById('s-acts').textContent=d.stats?.activities_count||0;
-document.getElementById('s-sleep').textContent=d.stats?.sleep_count||0;
-document.getElementById('s-daily').textContent=d.stats?.daily_count||0;
-
-var acts=(d.activities||[]).map(a=>({
-Date:fmtDate(a.start_time),
-Sport:'<span class="badge run">'+esc(a.sport_type||'run')+'</span>',
-Distance:fmtDist(a.distance_m),
-Duration:fmtDuration(a.duration_s),
-'Pace (s/km)':fmtPace(a.avg_pace_s),
-'Avg HR':a.avg_hr||'-',
-'Score':a.score||'-',
-'Ascent (m)':a.ascent_m||'-'
-}));
-document.getElementById('t-activities').innerHTML=renderTable(
-['Date','Sport','Distance','Duration','Pace (s/km)','Avg HR','Score','Ascent (m)'], acts);
-
-var sleep=(d.sleep||[]).map(s=>({
-Date:s.date,
-'Score':s.sleep_score?'<span class="badge sleep">'+s.sleep_score+'</span>':'-',
-'Duration':fmtDuration((s.duration_min||0)*60),
-'Deep %':s.deep_sleep_pct||'-',
-'Light %':s.light_sleep_pct||'-',
-'REM %':s.rem_sleep_pct||'-',
-'Awake (min)':s.awake_min||'-',
-'HRV':s.hrv||'-',
-'Resting HR':s.resting_hr||'-'
-}));
-document.getElementById('t-sleep').innerHTML=renderTable(
-['Date','Score','Duration','Deep %','Light %','REM %','Awake (min)','HRV','Resting HR'], sleep);
-
-var daily=(d.daily||[]).map(x=>({
-Date:x.date,
-'Sleep Score':x.sleep_score?'<span class="badge health">'+x.sleep_score+'</span>':'-',
-'Steps':x.steps?x.steps.toLocaleString():'-',
-'Stress':x.stress_score||'-',
-'Avg HR':x.avg_hr||'-',
-'Max HR':x.max_hr||'-',
-'Calories':x.calories_burned?x.calories_burned.toLocaleString():'-'
-}));
-document.getElementById('t-daily').innerHTML=renderTable(
-['Date','Sleep Score','Steps','Stress','Avg HR','Max HR','Calories'], daily);
-
-document.getElementById('updated').textContent=new Date().toLocaleString('th-TH');
+render('dashboard');
 }
 
 load();
