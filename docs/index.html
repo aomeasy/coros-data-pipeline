@@ -867,19 +867,22 @@ function toggleSidebar() {
 // ===== DATA LOADING =====
 async function loadData() {
   try {
-    const [dataRes, analysisRes] = await Promise.all([
-      fetch('data.json?t=' + Date.now()),
-      fetch('/api/analysis?t=' + Date.now()).catch(() => null)
-    ]);
+    const dataRes = await fetch('data.json?t=' + Date.now());
     
     if (dataRes.ok) corosData = await dataRes.json();
-    if (analysisRes && analysisRes.ok) analysisData = await analysisRes.json();
+    
+    // Try analysis API (only available when running locally)
+    try {
+      const analysisRes = await fetch('/api/analysis?t=' + Date.now());
+      if (analysisRes.ok) analysisData = await analysisRes.json();
+    } catch(e) { /* ignore - API not available on static hosting */ }
     
     document.getElementById('syncDot').className = 'sync-dot';
-    document.getElementById('syncStatus').textContent = corosData.stats?.last_updated
+    document.getElementById('syncStatus').textContent = corosData?.stats?.last_updated
       ? new Date(corosData.stats.last_updated).toLocaleString('th-TH')
       : 'Data loaded';
   } catch (e) {
+    console.error('Load failed:', e);
     document.getElementById('syncDot').className = 'sync-dot error';
     document.getElementById('syncStatus').textContent = 'Load failed';
   }
