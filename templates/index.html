@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<title>COROS Data Pipeline</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #1a1a2e; color: #eee; }
+.header { background: #16213e; padding: 20px 40px; display: flex; justify-content: space-between; align-items: center; }
+.header h1 { font-size: 22px; color: #e94560; }
+.header .nav { display: flex; gap: 8px; }
+.header .nav button { background: #0f3460; color: #eee; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+.header .nav button:hover, .header .nav button.active { background: #e94560; }
+.container { padding: 30px 40px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 30px; }
+.stat-card { background: #16213e; border-radius: 10px; padding: 20px; text-align: center; }
+.stat-card .number { font-size: 36px; font-weight: bold; color: #e94560; }
+.stat-card .label { font-size: 13px; color: #aaa; margin-top: 4px; }
+h2 { font-size: 18px; margin-bottom: 16px; color: #e94560; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 30px; background: #16213e; border-radius: 10px; overflow: hidden; }
+th { background: #0f3460; padding: 12px 16px; text-align: left; font-size: 13px; color: #aaa; }
+td { padding: 10px 16px; border-top: 1px solid #232745; font-size: 13px; }
+tr:hover { background: #1a1a3e; }
+.badge { background: #0f3460; padding: 3px 8px; border-radius: 4px; font-size: 11px; }
+.badge.run { background: #e94560; color: #fff; }
+.badge.sleep { background: #533483; color: #fff; }
+.badge.health { background: #0f3460; color: #fff; }
+.section { display: none; }
+.section.active { display: block; }
+</style>
+</head>
+<body>
+<div class="header">
+<h1>COROS Data Pipeline</h1>
+<div class="nav">
+<button onclick="showSection('activities')" id="btn-activities" class="active">Activities</button>
+<button onclick="showSection('sleep')" id="btn-sleep">Sleep</button>
+<button onclick="showSection('daily')" id="btn-daily">Daily Health</button>
+</div>
+</div>
+<div class="container">
+<div class="stats">
+<div class="stat-card"><div class="number">{{activities_count}}</div><div class="label">Activities</div></div>
+<div class="stat-card"><div class="number">{{sleep_count}}</div><div class="label">Sleep Records</div></div>
+<div class="stat-card"><div class="number">{{daily_count}}</div><div class="label">Daily Health</div></div>
+<div class="stat-card"><div class="number">{{last_sync}}</div><div class="label">Last Sync</div></div>
+</div>
+
+<div id="activities" class="section active">
+<h2>Recent Activities</h2>
+<table>
+<thead><tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Avg Pace</th><th>Avg HR</th><th>Score</th></tr></thead>
+<tbody>{{activities_rows}}</tbody>
+</table>
+</div>
+
+<div id="sleep" class="section">
+<h2>Sleep Data</h2>
+<table>
+<thead><tr><th>Date</th><th>Score</th><th>Duration</th><th>Deep %</th><th>Light %</th><th>REM %</th><th>Awake</th><th>HRV</th><th>Resting HR</th></tr></thead>
+<tbody>{{sleep_rows}}</tbody>
+</table>
+</div>
+
+<div id="daily" class="section">
+<h2>Daily Health</h2>
+<table>
+<thead><tr><th>Date</th><th>Sleep Score</th><th>Steps</th><th>Stress</th><th>Avg HR</th><th>Max HR</th><th>Calories</th></tr></thead>
+<tbody>{{daily_rows}}</tbody>
+</table>
+</div>
+</div>
+<script>
+function showSection(name) {
+document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+document.getElementById(name).classList.add('active');
+document.getElementById('btn-' + name).classList.add('active');
+}
+</script>
+</body>
+</html>
