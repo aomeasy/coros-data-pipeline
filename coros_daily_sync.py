@@ -174,11 +174,16 @@ def sync_activities():
         if m:
             activity["sportType"] = int(m.group(1))
         
-        # Duration and Distance
-        m = re.search(r'Duration:\s*([\d:]+h?\s*\d*min)\s*\|\s*Distance:\s*([\d.]+)\s*km', full_text)
+        # Duration and Distance — "Duration: 29:27 | Distance: 3.55 km"
+        m = re.search(r'Duration:\s*([\d:]+)\s*\|\s*Distance:\s*([\d.]+)\s*km', full_text)
         if m:
-            activity["duration"] = parse_duration(m.group(1))
-            activity["distance"] = float(m.group(2)) * 1000  # km to m
+            dur_str = m.group(1)
+            parts = dur_str.split(":")
+            if len(parts) == 2:
+                activity["duration"] = int(parts[0]) * 60 + int(parts[1])
+            elif len(parts) == 3:
+                activity["duration"] = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            activity["distance"] = float(m.group(2)) * 1000
         
         # Pace
         m = re.search(r'Average Pace:\s*([\d:]+\s*/km)', full_text)
