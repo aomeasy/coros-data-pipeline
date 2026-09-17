@@ -867,7 +867,7 @@ function toggleSidebar() {
 // ===== DATA LOADING =====
 async function loadData() {
   try {
-    const dataRes = await fetch('data.json?t=' + Date.now());
+    const dataRes = await fetch('./data.json?t=' + Date.now());
     
     if (dataRes.ok) corosData = await dataRes.json();
     
