@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 COROS Data Daily Sync
-รันทุกวันผ่าน GitHub Actions — ดึงข้อมูลจาก COROS-MCP แล้วเก็บใน SQLite
 """
 import sys
 import os
@@ -40,10 +39,43 @@ def login(email, password):
     return result.returncode == 0, result.stdout.strip(), result.stderr.strip()
 
 
+def call_tool(tool_name, args):
+    """เรียก COROS-MCP tool และ parse response"""
+    raw = _run(
+        "call-tool", "--tool", tool_name,
+        "--arguments-json", json.dumps(args),
+    )
+    if raw.returncode != 0:
+        return False, f"CLI error: {raw.stderr}", None
+    try:
+        resp = json.loads(raw.stdout)
+    except json.JSONDecodeError:
+        return False, f"Invalid JSON: {raw.stdout[:500]}", None
+    
+    # Debug: show structure
+    print(f"  [{tool_name}] response keys: {list(resp.keys())}")
+    if resp.get("isError"):
+        content = resp.get("content", [])
+        print(f"  [{tool_name}] ERROR content: {content}")
+        return False, f"Tool error: {content}", None
+    
+    # Extract actual data from MCP content wrapper
+    content = resp.get("content", [])
+    if isinstance(content, list) and len(content) > 0:
+        first = content[0]
+        if isinstance(first, dict) and "text" in first:
+            try:
+                data = json.loads(first["text"])
+                return True, "OK", data
+            except json.JSONDecodeError:
+                return False, f"Content not JSON: {first['text'][:300]}", None
+    # If no content wrapper, return resp directly
+    return True, "OK", resp
+
+
 def sync_activities():
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
-    # ALL fields per schema are required — use null for unused filters
     args = {
         "startDate": start_date,
         "endDate": end_date,
@@ -56,41 +88,30 @@ def sync_activities():
         "locationKeyword": None,
         "limit": 10,
     }
-    result = _run(
-        "call-tool", "--tool", "querySportRecords",
-        "--arguments-json", json.dumps(args),
-    )
-    if result.returncode != 0:
-        return False, f"Error: {result.stderr}"
-    try:
-        data = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError) as e:
-        return False, f"JSON decode: {e}, raw={result.stdout[:300]}"
-    # Debug
-    print(f"  querySportRecords keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+    ok, msg, data = call_tool("querySportRecords", args)
+    if not ok:
+        return False, msg
+    if data is None:
+        return False, "No data returned"
+    
     records = data.get("records") or data.get("activities") or data.get("sportRecords") or []
     count = 0
     for rec in records:
         coros_db.store_activity(rec)
         count += 1
-    return True, f"Synced {count} activities (raw keys: {list(data.keys())})"
+    return True, f"Synced {count} activities"
 
 
 def sync_sleep(days=7):
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
     args = {"startDate": start_date, "endDate": end_date, "days": days}
-    result = _run(
-        "call-tool", "--tool", "querySleepData",
-        "--arguments-json", json.dumps(args),
-    )
-    if result.returncode != 0:
-        return False, f"Error: {result.stderr}"
-    try:
-        data = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError) as e:
-        return False, f"JSON decode: {e}, raw={result.stdout[:300]}"
-    print(f"  querySleepData keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+    ok, msg, data = call_tool("querySleepData", args)
+    if not ok:
+        return False, msg
+    if data is None:
+        return False, "No data returned"
+    
     records = data.get("sleepData") or data.get("dailyHealthData") or data.get("sleepRecords") or []
     count = 0
     for rec in records:
@@ -100,17 +121,12 @@ def sync_sleep(days=7):
 
 
 def sync_daily_health(days=7):
-    result = _run(
-        "call-tool", "--tool", "queryDailyHealthData",
-        "--arguments-json", json.dumps({"days": days}),
-    )
-    if result.returncode != 0:
-        return False, f"Error: {result.stderr}"
-    try:
-        data = json.loads(result.stdout)
-    except (json.JSONDecodeError, TypeError) as e:
-        return False, f"JSON decode: {e}, raw={result.stdout[:300]}"
-    print(f"  queryDailyHealthData keys: {list(data.keys()) if isinstance(data, dict) else type(data)}")
+    ok, msg, data = call_tool("queryDailyHealthData", {"days": days})
+    if not ok:
+        return False, msg
+    if data is None:
+        return False, "No data returned"
+    
     records = data.get("dailyHealthData") or data.get("records") or []
     count = 0
     for rec in records:
