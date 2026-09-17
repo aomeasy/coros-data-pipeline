@@ -52,24 +52,30 @@ def call_tool(tool_name, args):
     except json.JSONDecodeError:
         return False, f"Invalid JSON: {raw.stdout[:500]}", None
     
-    # Debug: show structure
-    print(f"  [{tool_name}] response keys: {list(resp.keys())}")
-    if resp.get("isError"):
-        content = resp.get("content", [])
-        print(f"  [{tool_name}] ERROR content: {content}")
-        return False, f"Tool error: {content}", None
-    
-    # Extract actual data from MCP content wrapper
+    is_error = resp.get("isError", False)
     content = resp.get("content", [])
-    if isinstance(content, list) and len(content) > 0:
-        first = content[0]
-        if isinstance(first, dict) and "text" in first:
-            try:
-                data = json.loads(first["text"])
-                return True, "OK", data
-            except json.JSONDecodeError:
-                return False, f"Content not JSON: {first['text'][:300]}", None
-    # If no content wrapper, return resp directly
+    
+    # Extract text content
+    texts = []
+    for c in content:
+        if isinstance(c, dict) and "text" in c:
+            texts.append(c["text"])
+    
+    combined = "\n".join(texts)
+    
+    if is_error:
+        print(f"  [{tool_name}] ERROR: {combined[:500]}")
+        return False, f"Tool error: {combined}", None
+    
+    # Try to parse first text as JSON data
+    if texts:
+        try:
+            data = json.loads(texts[0])
+            return True, "OK", data
+        except json.JSONDecodeError:
+            # Return as raw text
+            return True, "OK", {"_raw": combined}
+    
     return True, "OK", resp
 
 
@@ -94,6 +100,9 @@ def sync_activities():
     if data is None:
         return False, "No data returned"
     
+    if "_raw" in data:
+        return False, f"Raw response: {data['_raw'][:500]}"
+    
     records = data.get("records") or data.get("activities") or data.get("sportRecords") or []
     count = 0
     for rec in records:
@@ -112,6 +121,9 @@ def sync_sleep(days=7):
     if data is None:
         return False, "No data returned"
     
+    if "_raw" in data:
+        return False, f"Raw response: {data['_raw'][:500]}"
+    
     records = data.get("sleepData") or data.get("dailyHealthData") or data.get("sleepRecords") or []
     count = 0
     for rec in records:
@@ -126,6 +138,9 @@ def sync_daily_health(days=7):
         return False, msg
     if data is None:
         return False, "No data returned"
+    
+    if "_raw" in data:
+        return False, f"Raw response: {data['_raw'][:500]}"
     
     records = data.get("dailyHealthData") or data.get("records") or []
     count = 0
