@@ -33,6 +33,7 @@ jobs:
         env:
           COROS_EMAIL: ${{ secrets.COROS_EMAIL }}
           COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
+          PYTHONIOENCODING: utf-8
         run: python coros_daily_sync.py
 
       - name: Export to JSON
