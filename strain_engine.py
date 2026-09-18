@@ -206,6 +206,13 @@ def compute_acwr(daily_trimp: Dict[str, float], as_of_date: str) -> Optional[dic
 
 # =============================================================================
 # 6. Persistence — daily_strain table
+#
+# ⚠️ DEPRECATED / ไม่ได้ใช้งานจริง: app.py เก็บผลลัพธ์ผ่าน coros_db.store_daily_strain()
+# ซึ่งใช้ schema คนละแบบกับ DAILY_STRAIN_SCHEMA ด้านล่างนี้ (column ชื่อไม่ตรงกัน:
+# coros_db ใช้ "day_strain" + "summary_json", ที่นี่ใช้ "strain" + "acwr_risk" + "source")
+# ถ้ามีใครเผลอเรียก save_daily_strain() นี้แทน coros_db.store_daily_strain() จะได้
+# sqlite3.OperationalError: no such column เพราะตารางจริงถูกสร้างจาก coros_db.py ไปแล้ว
+# เก็บไว้เป็น reference/legacy เฉยๆ — อย่าเรียกใช้ฟังก์ชันนี้จาก app.py หรือที่อื่น
 # =============================================================================
 
 DAILY_STRAIN_SCHEMA = """
