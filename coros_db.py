@@ -13,8 +13,87 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import data_validation as _dv
+from logging_utils import get_logger
+
+_log = get_logger("coros_db")
+
 # ใช้ directory ของ script เป็น base — รันใน GitHub Actions เท่านั้น
 DB_PATH = Path(__file__).parent / "coros_cache.db"
+
+# ---------------------------------------------------------------------------
+# Schema versioning / migrations (Phase 0 hardening)
+#
+# Every new column/table added in future phases (Strain, baselines, etc.)
+# should be added as a new numbered entry in MIGRATIONS instead of editing
+# init_db()'s CREATE TABLE statements directly. This lets an existing
+# coros_cache.db (with real synced data) upgrade in place instead of forcing
+# a destructive re-sync.
+# ---------------------------------------------------------------------------
+SCHEMA_VERSION = 1
+
+# Each migration is (version, description, list-of-SQL-statements).
+# Statements should be idempotent-safe (IF NOT EXISTS) where possible so
+# re-running a migration that partially applied doesn't error out.
+MIGRATIONS = [
+    (1, "baseline schema (activities, sleep_data, daily_health, journal_entries)", []),
+    # Future example:
+    # (2, "add daily_strain table", ["CREATE TABLE IF NOT EXISTS daily_strain (...)"]),
+]
+
+
+def _ensure_schema_meta(conn):
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS schema_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    """)
+    conn.commit()
+
+
+def get_schema_version(conn=None) -> int:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_conn()
+    _ensure_schema_meta(conn)
+    row = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+    if own_conn:
+        conn.close()
+    return int(row[0]) if row else 0
+
+
+def _set_schema_version(conn, version: int):
+    conn.execute(
+        "INSERT INTO schema_meta (key, value) VALUES ('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(version),),
+    )
+    conn.commit()
+
+
+def migrate():
+    """Apply any migrations newer than the DB's current schema_version.
+
+    Safe to call every run (it's called from init_db() below): if the DB is
+    already at SCHEMA_VERSION, this is a no-op.
+    """
+    conn = get_conn()
+    _ensure_schema_meta(conn)
+    current = get_schema_version(conn)
+    applied = []
+    for version, description, statements in MIGRATIONS:
+        if version <= current:
+            continue
+        for stmt in statements:
+            conn.execute(stmt)
+        conn.commit()
+        _set_schema_version(conn, version)
+        applied.append((version, description))
+        current = version
+    conn.close()
+    return applied
+
 
 def get_conn():
     """เปิด connection ไปยัง SQLite database"""
@@ -96,13 +175,42 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_journal_date ON journal_entries(date);
     """)
+    conn.commit()
+    _ensure_schema_meta(conn)
+    # If this is a brand-new DB, stamp it at the current baseline version
+    # without re-running migration statements that assume the base tables
+    # didn't exist yet.
+    if get_schema_version(conn) == 0:
+        _set_schema_version(conn, 1)
     conn.close()
+    # Apply any migrations newer than version 1 (no-op on a fresh DB).
+    migrate()
 
 def store_activity(activity):
     """
     เก็บกิจกรรมลง database
     activity: dict จาก COROS getActivityDetail
+
+    ผ่าน data_validation ก่อนเสมอ: ค่าที่หลุดช่วงที่เป็นไปได้จริง (เช่น
+    distance ติดลบ, avg_hr 900) จะถูก null ทิ้งแทนที่จะถูกเก็บลง DB และไป
+    บิดเบือนทุก metric ที่คำนวณต่อจากมัน — record ที่ไม่มี activity_id เลย
+    จะถูก reject ไม่บันทึกอะไรทั้งแถว
     """
+    row = {
+        "activity_id": activity.get("activityId"),
+        "distance_m": activity.get("distance", 0),
+        "duration_s": activity.get("duration", 0),
+        "avg_hr": activity.get("averageHeartRate"),
+        "max_hr": activity.get("maxHeartRate"),
+        "calories_burned": activity.get("caloriesBurned"),
+    }
+    clean, issues = _dv.clean_activity_record(row)
+    if _dv.has_blocking_issue(issues):
+        _log.warning("activity_rejected", issues=[i.as_dict() for i in issues])
+        return False
+    for issue in issues:
+        _log.warning("activity_field_issue", **issue.as_dict())
+
     now = datetime.now().isoformat()
     conn = get_conn()
     conn.execute("""
@@ -112,16 +220,16 @@ def store_activity(activity):
      ascent_m, descent_m, score, summary_json, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        activity.get("activityId"),
+        clean["activity_id"],
         activity.get("sportType"),
         activity.get("startTime"),
-        activity.get("distance", 0),
-        activity.get("duration", 0),
+        clean["distance_m"],
+        clean["duration_s"],
         activity.get("averagePace"),
         activity.get("averageCadence"),
         activity.get("caloriesBurned"),
-        activity.get("averageHeartRate"),
-        activity.get("maxHeartRate"),
+        clean["avg_hr"],
+        clean["max_hr"],
         activity.get("ascent"),
         activity.get("descent"),
         activity.get("score"),
@@ -130,6 +238,7 @@ def store_activity(activity):
     ))
     conn.commit()
     conn.close()
+    return True
 
 def get_recent_activities(sport="running", limit=5):
     """ดึงกิจกรรมล่าสุดจาก database"""
@@ -155,7 +264,27 @@ def store_sleep(data):
     """
     เก็บข้อมูลการนอน
     data: dict จาก queryDailyHealthData หรือ querySleepData
+
+    ผ่าน data_validation ก่อนเสมอ (ดูเหตุผลใน store_activity)
     """
+    row = {
+        "date": data.get("date"),
+        "sleep_score": data.get("sleepScore"),
+        "duration_min": data.get("duration", 0),
+        "deep_sleep_pct": data.get("deepSleepRatio"),
+        "light_sleep_pct": data.get("lightSleepRatio"),
+        "rem_sleep_pct": data.get("remSleepRatio"),
+        "awake_min": data.get("awakeDuration"),
+        "hrv": data.get("hrv"),
+        "resting_hr": data.get("restingHeartRate"),
+    }
+    clean, issues = _dv.clean_sleep_record(row)
+    if _dv.has_blocking_issue(issues):
+        _log.warning("sleep_record_rejected", issues=[i.as_dict() for i in issues])
+        return False
+    for issue in issues:
+        _log.warning("sleep_field_issue", date=row.get("date"), **issue.as_dict())
+
     now = datetime.now().isoformat()
     conn = get_conn()
     conn.execute("""
@@ -164,20 +293,21 @@ def store_sleep(data):
      rem_sleep_pct, awake_min, hrv, resting_hr, summary_json, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        data.get("date"),
-        data.get("sleepScore"),
-        data.get("duration", 0),
-        data.get("deepSleepRatio"),
-        data.get("lightSleepRatio"),
-        data.get("remSleepRatio"),
-        data.get("awakeDuration"),
-        data.get("hrv"),
-        data.get("restingHeartRate"),
+        clean["date"],
+        clean["sleep_score"],
+        clean["duration_min"],
+        clean["deep_sleep_pct"],
+        clean["light_sleep_pct"],
+        clean["rem_sleep_pct"],
+        clean["awake_min"],
+        clean["hrv"],
+        clean["resting_hr"],
         json.dumps(data, ensure_ascii=False),
         now, now
     ))
     conn.commit()
     conn.close()
+    return True
 
 def get_recent_sleep(days=7):
     """ดึงข้อมูลการนอนล่าสุดจาก database"""
@@ -193,7 +323,24 @@ def store_daily_health(data):
     """
     เก็บข้อมูลสุขภาพรายวัน
     data: dict จาก queryDailyHealthData
+
+    ผ่าน data_validation ก่อนเสมอ (ดูเหตุผลใน store_activity)
     """
+    row = {
+        "date": data.get("date"),
+        "steps": data.get("steps"),
+        "stress_score": data.get("stressLevel"),
+        "avg_hr": data.get("averageHeartRate"),
+        "max_hr": data.get("maxHeartRate"),
+        "calories_burned": data.get("caloriesBurned"),
+    }
+    clean, issues = _dv.clean_daily_health_record(row)
+    if _dv.has_blocking_issue(issues):
+        _log.warning("daily_health_rejected", issues=[i.as_dict() for i in issues])
+        return False
+    for issue in issues:
+        _log.warning("daily_health_field_issue", date=row.get("date"), **issue.as_dict())
+
     now = datetime.now().isoformat()
     conn = get_conn()
     conn.execute("""
@@ -201,18 +348,19 @@ def store_daily_health(data):
     (date, sleep_score, steps, stress_score, avg_hr, max_hr, calories_burned, summary_json, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?)
     """, (
-        data.get("date"),
+        clean["date"],
         data.get("sleepScore"),
-        data.get("steps"),
-        data.get("stressLevel"),
-        data.get("averageHeartRate"),
-        data.get("maxHeartRate"),
-        data.get("caloriesBurned"),
+        clean["steps"],
+        clean["stress_score"],
+        clean["avg_hr"],
+        clean["max_hr"],
+        clean["calories_burned"],
         json.dumps(data, ensure_ascii=False),
         now, now
     ))
     conn.commit()
     conn.close()
+    return True
 
 def get_recent_daily_health(days=7):
     """ดึงข้อมูลสุขภาพรายวันล่าสุด"""
@@ -263,11 +411,13 @@ def get_db_stats():
     sleep_count = conn.execute("SELECT COUNT(*) FROM sleep_data").fetchone()[0]
     daily_count = conn.execute("SELECT COUNT(*) FROM daily_health").fetchone()[0]
     conn.close()
+    schema_version = get_schema_version()
     return {
         "activities": activities_count,
         "sleep_records": sleep_count,
         "daily_health": daily_count,
-        "db_path": str(DB_PATH)
+        "db_path": str(DB_PATH),
+        "schema_version": schema_version,
     }
 
 def store_journal(data):
