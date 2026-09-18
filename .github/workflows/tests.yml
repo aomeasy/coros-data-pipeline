@@ -24,8 +24,10 @@ jobs:
 
       - name: Run test suite
         run: pytest -v
-
+        
       - name: Compile-check every module (catches syntax errors fast)
         run: |
           python -m py_compile coros_daily_sync.py coros_db.py data_validation.py \
-            logging_utils.py app.py breath_analysis.py sleep_analysis.py export.py
+            logging_utils.py app.py breath_analysis.py sleep_analysis.py export.py \
+            baseline_engine.py
+            
