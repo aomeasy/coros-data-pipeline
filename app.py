@@ -100,12 +100,18 @@ def api_analysis():
             "resting_hr": rec.get("resting_hr"),
             "stages": stages,
         })
-
-    # Baselines
-    baseline_deep = sleep_analysis.compute_baseline(sleep_for_analysis, ["deep_sleep_pct"])
-    baseline_rem = sleep_analysis.compute_baseline(sleep_for_analysis, ["rem_sleep_pct"])
-    baseline_hrv = sleep_analysis.compute_baseline(sleep_for_analysis, ["hrv"])
-    baseline_rhr = sleep_analysis.compute_baseline(sleep_for_analysis, ["resting_hr"])
+    import baseline_engine
+    
+    sleep_for_analysis = baseline_engine.attach_training_load_proxy(sleep_for_analysis, activities)
+    
+    baseline_deep = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["deep_sleep_pct"], metric_name="deep")
+    baseline_rem  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["rem_sleep_pct"], metric_name="rem")
+    baseline_hrv  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["hrv"], metric_name="hrv_ln_rmssd", log_transform=True)
+    baseline_rhr  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["resting_hr"], metric_name="resting_hr")
+    
+    for name, b in [("deep", baseline_deep), ("rem", baseline_rem), ("hrv_ln", baseline_hrv), ("resting_hr", baseline_rhr)]:
+        baseline_engine.save_baseline_snapshot(coros_db.get_conn(), datetime.now().strftime("%Y-%m-%d"), name, b)
+     
 
     # Recovery score (latest)
     latest = sleep_for_analysis[-1] if sleep_for_analysis else {}
