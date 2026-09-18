@@ -21,6 +21,7 @@ import coros_db
 import sleep_analysis
 import breath_analysis
 import strain_engine  # Phase 2.2
+import baseline_engine   # Phase 1 — EWMA + confidence band (เพิ่มใหม่)
 
 app = Flask(__name__, static_folder=DOCS_DIR, static_url_path="")
 
@@ -128,11 +129,16 @@ def api_analysis():
         })
 
     # Baselines
-    baseline_deep = sleep_analysis.compute_baseline(sleep_for_analysis, ["deep_sleep_pct"])
-    baseline_rem = sleep_analysis.compute_baseline(sleep_for_analysis, ["rem_sleep_pct"])
-    baseline_hrv = sleep_analysis.compute_baseline(sleep_for_analysis, ["hrv"])
-    baseline_rhr = sleep_analysis.compute_baseline(sleep_for_analysis, ["resting_hr"])
-    baseline_resp_rate = sleep_analysis.compute_baseline(daily_records, ["respiratory_rate"])
+    baseline_deep = baseline_engine.compute_baseline_v2(
+        sleep_for_analysis, ["deep_sleep_pct"], metric_name="deep")
+    baseline_rem = baseline_engine.compute_baseline_v2(
+        sleep_for_analysis, ["rem_sleep_pct"], metric_name="rem")
+    baseline_hrv = baseline_engine.compute_baseline_v2(
+        sleep_for_analysis, ["hrv"], metric_name="hrv_ln_rmssd", log_transform=True)
+    baseline_rhr = baseline_engine.compute_baseline_v2(
+        sleep_for_analysis, ["resting_hr"], metric_name="resting_hr")
+    baseline_resp_rate = baseline_engine.compute_baseline_v2(
+        daily_records, ["respiratory_rate"], metric_name="resp_rate")
 
     # ---------------------------------------------------------------
     # Phase 2.2 — Strain Engine: คำนวณจาก activities แล้วเก็บ + ดึงกลับ
@@ -171,8 +177,10 @@ def api_analysis():
     })
     spo2_flag = sleep_analysis.flag_spo2_risk(spo2_analysis)
 
+    hrv_today_ln = baseline_engine.ln_rmssd(latest.get("hrv"))
+
     rec_score = sleep_analysis.recovery_score(
-        hrv_today=latest.get("hrv"),
+        hrv_today=hrv_today_ln,
         hrv_baseline=baseline_hrv,
         rhr_today=latest.get("resting_hr"),
         rhr_baseline=baseline_rhr,
