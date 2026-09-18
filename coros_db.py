@@ -155,6 +155,19 @@ def init_db():
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS baselines_daily (
+        date            TEXT NOT NULL,
+        metric_name     TEXT NOT NULL,
+        context         TEXT,
+        mean            REAL,
+        stdev           REAL,
+        n               INTEGER,
+        confidence      TEXT,
+        half_life_days  REAL,
+        log_transformed INTEGER,
+        PRIMARY KEY (date, metric_name, context)
+    );
+    
     CREATE INDEX IF NOT EXISTS idx_activities_sport ON activities(sport_type);
     CREATE INDEX IF NOT EXISTS idx_activities_start ON activities(start_time);
     CREATE INDEX IF NOT EXISTS idx_sleep_date ON sleep_data(date);
