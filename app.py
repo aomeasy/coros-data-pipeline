@@ -51,25 +51,44 @@ def api_data():
     return jsonify({"error": "data.json not found"}), 404
 
 
-def _compute_and_store_strain(activities, days=28):
+def _compute_and_store_strain(activities, sleep_records, days=28):
     """
-    Phase 2.2 — เรียก strain_engine กับ activities ที่มี แล้วเก็บผลลง daily_strain
+    Phase 2.2 — เรียก strain_engine กับ activities + sleep_records แล้วเก็บผลลง daily_strain
 
-    NOTE: สมมติว่า strain_engine.py มีฟังก์ชัน compute_daily_strain(activities) -> list[dict]
-    ที่ return รายการต่อวัน [{"date": "YYYY-MM-DD", "day_strain": float,
-                              "trimp": float, "acwr": float, ...}, ...]
-    ตาม integration point ที่ออกแบบไว้ — ถ้าฟังก์ชัน/พารามิเตอร์จริงในไฟล์คุณชื่ออื่น
-    แก้แค่บรรทัด strain_engine.compute_daily_strain(...) จุดเดียวด้านล่างนี้พอ
+    BUGFIX (เดิมโค้ดนี้พังเงียบมาตลอด — /api/analysis เคย return daily_strain
+    เป็น [] และ latest_strain เป็น None ทุกครั้ง โดยไม่มี error โผล่ให้เห็นเลย):
+
+    1. ชื่อฟังก์ชันผิด: เดิมเรียก strain_engine.compute_daily_strain(activities)
+       แต่ฟังก์ชันจริงใน strain_engine.py ชื่อ compute_strain_for_all_days(...)
+       และต้องการ sleep_records ด้วย (ใช้หา HR rest) -> AttributeError ทุกครั้ง
+       แล้วถูก except AttributeError: return [] กลืนเงียบไปเลย
+    2. ชื่อ field ไม่ตรงกัน: strain_engine คืนค่า key "strain" ไม่ใช่ "day_strain"
+       ที่ coros_db.store_daily_strain() อ่าน -> ต่อให้เรียกฟังก์ชันถูก ก็จะได้
+       day_strain = NULL ในตารางทุกแถวอยู่ดี
+    3. "acwr" ที่ strain_engine คืนมาเป็น dict ทั้งก้อน (acwr/acute_avg/chronic_avg/
+       confidence/risk) ไม่ใช่ตัวเลขเดียว -- ถ้าเอาไปยัด column REAL ตรงๆ sqlite3
+       จะโยน InterfaceError (unsupported type) ทันที ต้องแกะ ["acwr"] ออกมาก่อน
     """
     try:
-        strain_results = strain_engine.compute_daily_strain(activities)
-    except AttributeError:
-        # เผื่อชื่อฟังก์ชันจริงต่างไป — ป้องกัน endpoint ทั้งตัวพังเพราะจุดเดียว
-        return []
+        strain_results = strain_engine.compute_strain_for_all_days(activities, sleep_records)
+    except Exception as e:
+        # ยังกันไม่ให้ /api/analysis ทั้งตัวล่มถ้า strain engine มีปัญหา
+        # แต่ log ไว้จริงแทนการกลืนเงียบแบบเดิม เพื่อให้เห็นตอน debug
+        app.logger.warning("strain_engine.compute_strain_for_all_days failed: %s", e)
+        return coros_db.get_recent_daily_strain(days=days)
 
     for s in strain_results:
-        if s.get("date"):
-            coros_db.store_daily_strain(s)
+        if not s.get("date"):
+            continue
+        acwr_result = s.get("acwr") or {}
+        coros_db.store_daily_strain({
+            "date": s["date"],
+            "day_strain": s.get("strain"),
+            "trimp": s.get("trimp"),
+            "acwr": acwr_result.get("acwr"),
+            "acwr_risk": acwr_result.get("risk"),
+            "acwr_confidence": acwr_result.get("confidence"),
+        })
 
     return coros_db.get_recent_daily_strain(days=days)
 
@@ -84,8 +103,11 @@ def api_analysis():
     daily_records = [dict(r) for r in conn.execute(
         "SELECT * FROM daily_health ORDER BY date ASC"
     ).fetchall()]
+    # FIX: ของเดิม LIMIT 20 กิจกรรม อาจไม่พอสำหรับ ACWR ซึ่งต้องมองย้อน 28 วัน
+    # (ถ้าออกกำลังกายบ่อยกว่า 20 ครั้ง/28 วัน ค่า chronic average จะเพี้ยนเพราะข้อมูลหาย)
     activities = [dict(r) for r in conn.execute(
-        "SELECT * FROM activities ORDER BY start_time DESC LIMIT 20"
+        "SELECT * FROM activities WHERE start_time >= date('now', '-35 days') "
+        "ORDER BY start_time DESC"
     ).fetchall()]
     journals = [dict(r) for r in conn.execute(
         "SELECT * FROM journal_entries ORDER BY date ASC"
@@ -143,7 +165,7 @@ def api_analysis():
     # ---------------------------------------------------------------
     # Phase 2.2 — Strain Engine: คำนวณจาก activities แล้วเก็บ + ดึงกลับ
     # ---------------------------------------------------------------
-    strain_series = _compute_and_store_strain(activities, days=28)
+    strain_series = _compute_and_store_strain(activities, sleep_for_analysis, days=28)
     latest_strain = strain_series[0] if strain_series else None  # ORDER BY date DESC
 
     # ---------------------------------------------------------------
