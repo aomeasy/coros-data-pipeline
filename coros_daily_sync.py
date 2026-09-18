@@ -226,6 +226,25 @@ def sync_sleep_and_health(days=7):
     
     # Split by date sections
     sections = re.split(r'---\s*(\d{4}\d{2}\d{2})\s*---', text)
+    # sections[0] is the report header — NOT a date section, but it carries
+    # report-wide baseline values (e.g. "Resting HR: 50 bpm | HRV Baseline: 42 ms")
+    # that used to be silently discarded. Parse them here so every day in this
+    # sync at least gets a value instead of permanent NULL.
+    header = sections[0] if sections else ""
+
+    baseline_resting_hr = None
+    m = re.search(r'Resting HR:\s*(\d+)\s*bpm', header)
+    if m:
+        baseline_resting_hr = int(m.group(1))
+
+    baseline_hrv = None
+    m = re.search(r'HRV Baseline:\s*(\d+)\s*ms', header)
+    if m:
+        baseline_hrv = int(m.group(1))
+
+    if baseline_resting_hr is not None or baseline_hrv is not None:
+        print(f"  Header baseline → Resting HR: {baseline_resting_hr} bpm, HRV: {baseline_hrv} ms")
+
     # sections[0] is header, then alternating date/date_content
     i = 1
     while i < len(sections) - 1:
@@ -280,7 +299,23 @@ def sync_sleep_and_health(days=7):
             m = re.search(r'Awake:\s*(\d+)\s*min', sleep_section)
             if m:
                 sleep_rec["awakeDuration"] = int(m.group(1))
-            
+
+        # HRV / Resting HR / Sleep Score — try per-day value first (in case
+        # COROS ever includes it inside a day's block), then fall back to the
+        # report-wide baseline parsed from the header above. Without this,
+        # these three fields were ALWAYS None/NULL regardless of how many
+        # times the sync ran.
+        m = re.search(r'HRV:\s*(\d+)\s*ms', content)
+        sleep_rec["hrv"] = int(m.group(1)) if m else baseline_hrv
+
+        m = re.search(r'Resting HR:\s*(\d+)\s*bpm', content)
+        sleep_rec["restingHeartRate"] = int(m.group(1)) if m else baseline_resting_hr
+
+        m = re.search(r'Sleep Score:\s*(\d+)', content)
+        if m:
+            sleep_rec["sleepScore"] = int(m.group(1))
+
+        if "Sleep Summary:" in content:
             coros_db.store_sleep(sleep_rec)
             sleep_count += 1
         
