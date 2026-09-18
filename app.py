@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """COROS Data Pipeline — Flask Web UI"""
+
 import os
 import json
 import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta
+
 from flask import Flask, request, jsonify, send_from_directory, send_file
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +20,7 @@ sys.path.insert(0, SCRIPT_DIR)
 import coros_db
 import sleep_analysis
 import breath_analysis
+import strain_engine  # Phase 2.2
 
 app = Flask(__name__, static_folder=DOCS_DIR, static_url_path="")
 
@@ -47,9 +50,32 @@ def api_data():
     return jsonify({"error": "data.json not found"}), 404
 
 
+def _compute_and_store_strain(activities, days=28):
+    """
+    Phase 2.2 — เรียก strain_engine กับ activities ที่มี แล้วเก็บผลลง daily_strain
+
+    NOTE: สมมติว่า strain_engine.py มีฟังก์ชัน compute_daily_strain(activities) -> list[dict]
+    ที่ return รายการต่อวัน [{"date": "YYYY-MM-DD", "day_strain": float,
+                              "trimp": float, "acwr": float, ...}, ...]
+    ตาม integration point ที่ออกแบบไว้ — ถ้าฟังก์ชัน/พารามิเตอร์จริงในไฟล์คุณชื่ออื่น
+    แก้แค่บรรทัด strain_engine.compute_daily_strain(...) จุดเดียวด้านล่างนี้พอ
+    """
+    try:
+        strain_results = strain_engine.compute_daily_strain(activities)
+    except AttributeError:
+        # เผื่อชื่อฟังก์ชันจริงต่างไป — ป้องกัน endpoint ทั้งตัวพังเพราะจุดเดียว
+        return []
+
+    for s in strain_results:
+        if s.get("date"):
+            coros_db.store_daily_strain(s)
+
+    return coros_db.get_recent_daily_strain(days=days)
+
+
 @app.route("/api/analysis")
 def api_analysis():
-    """Run sleep_analysis + breath_analysis, return JSON"""
+    """Run sleep_analysis + breath_analysis + strain_engine, return JSON"""
     conn = get_db()
     sleep_records = [dict(r) for r in conn.execute(
         "SELECT * FROM sleep_data ORDER BY date ASC"
@@ -100,28 +126,61 @@ def api_analysis():
             "resting_hr": rec.get("resting_hr"),
             "stages": stages,
         })
-    import baseline_engine
-    
-    sleep_for_analysis = baseline_engine.attach_training_load_proxy(sleep_for_analysis, activities)
-    
-    baseline_deep = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["deep_sleep_pct"], metric_name="deep")
-    baseline_rem  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["rem_sleep_pct"], metric_name="rem")
-    baseline_hrv  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["hrv"], metric_name="hrv_ln_rmssd", log_transform=True)
-    baseline_rhr  = baseline_engine.compute_baseline_v2(sleep_for_analysis, ["resting_hr"], metric_name="resting_hr")
-    
-    for name, b in [("deep", baseline_deep), ("rem", baseline_rem), ("hrv_ln", baseline_hrv), ("resting_hr", baseline_rhr)]:
-        baseline_engine.save_baseline_snapshot(coros_db.get_conn(), datetime.now().strftime("%Y-%m-%d"), name, b)
-     
 
-    # Recovery score (latest)
+    # Baselines
+    baseline_deep = sleep_analysis.compute_baseline(sleep_for_analysis, ["deep_sleep_pct"])
+    baseline_rem = sleep_analysis.compute_baseline(sleep_for_analysis, ["rem_sleep_pct"])
+    baseline_hrv = sleep_analysis.compute_baseline(sleep_for_analysis, ["hrv"])
+    baseline_rhr = sleep_analysis.compute_baseline(sleep_for_analysis, ["resting_hr"])
+    baseline_resp_rate = sleep_analysis.compute_baseline(daily_records, ["respiratory_rate"])
+
+    # ---------------------------------------------------------------
+    # Phase 2.2 — Strain Engine: คำนวณจาก activities แล้วเก็บ + ดึงกลับ
+    # ---------------------------------------------------------------
+    strain_series = _compute_and_store_strain(activities, days=28)
+    latest_strain = strain_series[0] if strain_series else None  # ORDER BY date DESC
+
+    # ---------------------------------------------------------------
+    # Recovery Score — แก้ให้ sleep_performance_pct เป็นค่าจริง (ของเดิม hardcode
+    # ไว้ที่ 85 เสมอ) + ผูก training_load จาก strain (โหลดเมื่อวานกระทบ need วันนี้)
+    # + pass resp_rate_z / spo2_flag / skin_temp_flag ที่ของเดิมไม่เคยส่งเข้า
+    # recovery_score() เลยทั้งที่ฟังก์ชันรับพารามิเตอร์นี้อยู่แล้ว
+    # ---------------------------------------------------------------
     latest = sleep_for_analysis[-1] if sleep_for_analysis else {}
+    latest_daily = daily_records[-1] if daily_records else {}
+
+    training_load_prev_day = latest_strain.get("trimp") if latest_strain else 0
+    sleep_need = sleep_analysis.calculate_sleep_need(
+        training_load=training_load_prev_day or 0,
+    )
+    sp_pct = sleep_analysis.sleep_performance(
+        actual_min=latest.get("duration_min", 0) or 0,
+        need_min=sleep_need["sleep_need_min"],
+    )
+
+    resp_rate_z = sleep_analysis.z_score(
+        latest_daily.get("respiratory_rate"), baseline_resp_rate
+    ) or 0
+
+    skin_temp_analysis = sleep_analysis.analyze_skin_temp(daily_records, window=7)
+    skin_temp_flag = skin_temp_analysis.get("flag", "normal")
+
+    spo2_analysis = sleep_analysis.analyze_spo2({
+        "spo2_avg": latest_daily.get("spo2_avg"),
+        "spo2_min": latest_daily.get("spo2_min"),
+    })
+    spo2_flag = sleep_analysis.flag_spo2_risk(spo2_analysis)
+
     rec_score = sleep_analysis.recovery_score(
         hrv_today=latest.get("hrv"),
         hrv_baseline=baseline_hrv,
         rhr_today=latest.get("resting_hr"),
         rhr_baseline=baseline_rhr,
-        sleep_performance_pct=85,
+        sleep_performance_pct=sp_pct,
         sleep_efficiency_pct=latest.get("duration_min", 0) / max(latest.get("time_in_bed_min", 1), 1) * 100 if latest else 80,
+        spo2_flag=spo2_flag,
+        skin_temp_flag=skin_temp_flag,
+        resp_rate_z=resp_rate_z,
     )
 
     # SQI
@@ -153,7 +212,6 @@ def api_analysis():
         })
 
     # Breathing efficiency (latest)
-    latest_daily = daily_records[-1] if daily_records else {}
     breath_eff = breath_analysis.breathing_efficiency_score(
         rr=latest_daily.get("respiratory_rate"),
         spo2=latest_daily.get("spo2_avg"),
@@ -187,8 +245,11 @@ def api_analysis():
             "rem": baseline_rem,
             "hrv": baseline_hrv,
             "resting_hr": baseline_rhr,
+            "respiratory_rate": baseline_resp_rate,
         },
         "recovery_score": rec_score,
+        "daily_strain": strain_series,          # Phase 2.2 — คู่กับ recovery_score
+        "latest_strain": latest_strain,         # ให้ frontend โชว์ ring คู่ได้ง่ายๆ
         "sqi": sqi,
         "weekly_report": weekly_report,
         "journal_correlations": journal_correlations,
@@ -215,17 +276,17 @@ def api_journal_post():
     data = request.get_json(force=True)
     if not data.get("data"):
         return jsonify({"error": "missing 'data' field"}), 400
-    
+
     entry = data["data"]
     if not entry.get("date"):
         entry["date"] = datetime.now().strftime("%Y-%m-%d")
-    
+
     # Convert boolean fields to int
     bool_fields = ["caffeine_after_14", "late_meal", "exercise_evening", "room_temp_hot"]
     for f in bool_fields:
         if f in entry:
             entry[f] = 1 if entry[f] else 0
-    
+
     coros_db.store_journal(entry)
     return jsonify({"ok": True, "date": entry["date"]})
 
@@ -236,6 +297,7 @@ def api_sync():
     env = os.environ.copy()
     env["COROS_EMAIL"] = os.environ.get("COROS_EMAIL", "")
     env["COROS_PASSWORD"] = os.environ.get("COROS_PASSWORD", "")
+
     result = subprocess.run(
         [sys.executable, os.path.join(SCRIPT_DIR, "coros_daily_sync.py")],
         capture_output=True, text=True, env=env,
