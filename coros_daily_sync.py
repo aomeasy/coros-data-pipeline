@@ -8,30 +8,79 @@ import os
 import subprocess
 import json
 import re
+import time
 from datetime import datetime, timedelta
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 import coros_db
+from logging_utils import get_logger
+
+log = get_logger("coros_daily_sync")
+
+# Phase 0 hardening: retry/timeout config for the npx coros-mcp subprocess.
+# The CLI shells out to COROS's servers — transient network hiccups or a
+# slow cold-start of `npx` (which may need to download the package) should
+# not fail an entire morning's sync on the first hiccup.
+SUBPROCESS_TIMEOUT_S = 60
+MAX_RETRIES = 3
+RETRY_BACKOFF_S = 5  # multiplied by attempt number (5s, 10s, 15s...)
 
 
-def _run(*args, stdin_input=None):
+def _run(*args, stdin_input=None, timeout=SUBPROCESS_TIMEOUT_S, retries=MAX_RETRIES):
+    """Run `npx coros-mcp <args>` with a timeout and retry/backoff.
+
+    Returns an object with .returncode/.stdout/.stderr, same shape as
+    subprocess.run's result, even on timeout (returncode=-1) so callers
+    don't need to special-case exceptions.
+    """
     cmd = ["npx", "coros-mcp"] + list(args)
-    result = subprocess.run(
-        cmd,
-        input=stdin_input,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        shell=True,
-    )
-    if result.stdout is None:
-        result.stdout = ""
-    if result.stderr is None:
-        result.stderr = ""
-    return result
+    last_result = None
+    for attempt in range(1, retries + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                input=stdin_input,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                shell=True,
+                timeout=timeout,
+            )
+            if result.stdout is None:
+                result.stdout = ""
+            if result.stderr is None:
+                result.stderr = ""
+            if result.returncode == 0:
+                if attempt > 1:
+                    log.info("subprocess_retry_succeeded", cmd=args[0] if args else "?", attempt=attempt)
+                return result
+            last_result = result
+            log.warning(
+                "subprocess_nonzero_exit",
+                cmd=args[0] if args else "?",
+                attempt=attempt,
+                returncode=result.returncode,
+                stderr=result.stderr[:300],
+            )
+        except subprocess.TimeoutExpired:
+            log.warning("subprocess_timeout", cmd=args[0] if args else "?",
+                        attempt=attempt, timeout_s=timeout)
+            last_result = subprocess.CompletedProcess(cmd, -1, "", f"Timed out after {timeout}s")
+        except OSError as e:
+            log.warning("subprocess_os_error", cmd=args[0] if args else "?",
+                        attempt=attempt, error=str(e))
+            last_result = subprocess.CompletedProcess(cmd, -1, "", str(e))
+
+        if attempt < retries:
+            sleep_s = RETRY_BACKOFF_S * attempt
+            log.info("subprocess_retry_backoff", seconds=sleep_s, next_attempt=attempt + 1)
+            time.sleep(sleep_s)
+
+    log.error("subprocess_failed_all_retries", cmd=args[0] if args else "?", retries=retries)
+    return last_result
 
 
 def login(email, password):
@@ -134,6 +183,7 @@ def sync_activities():
     
     # Parse sport records
     count = 0
+    rejected = 0
     # Split by numbered entries
     entries = re.split(r'\n\d+\.\s+', text)
     for entry in entries[1:]:  # skip header
@@ -206,10 +256,14 @@ def sync_activities():
             ts = int(m.group(1))
             activity["startTime"] = datetime.fromtimestamp(ts).isoformat()
         
-        coros_db.store_activity(activity)
-        count += 1
-    
-    return True, f"Synced {count} activities"
+        if coros_db.store_activity(activity):
+            count += 1
+        else:
+            rejected += 1
+
+    if rejected:
+        log.warning("activities_rejected", count=rejected)
+    return True, f"Synced {count} activities ({rejected} rejected by validation)"
 
 
 def sync_sleep_and_health(days=7):
@@ -223,7 +277,9 @@ def sync_sleep_and_health(days=7):
     
     sleep_count = 0
     daily_count = 0
-    
+    sleep_rejected = 0
+    daily_rejected = 0
+
     # Split by date sections
     sections = re.split(r'---\s*(\d{4}\d{2}\d{2})\s*---', text)
     # sections[0] is the report header — NOT a date section, but it carries
@@ -316,39 +372,69 @@ def sync_sleep_and_health(days=7):
             sleep_rec["sleepScore"] = int(m.group(1))
 
         if "Sleep Summary:" in content:
-            coros_db.store_sleep(sleep_rec)
-            sleep_count += 1
-        
-        coros_db.store_daily_health(daily_rec)
-        daily_count += 1
-    
-    return True, f"Synced {sleep_count} sleep + {daily_count} daily health records"
+            if coros_db.store_sleep(sleep_rec):
+                sleep_count += 1
+            else:
+                sleep_rejected += 1
+
+        if coros_db.store_daily_health(daily_rec):
+            daily_count += 1
+        else:
+            daily_rejected += 1
+
+    if sleep_rejected or daily_rejected:
+        log.warning("health_records_rejected", sleep_rejected=sleep_rejected, daily_rejected=daily_rejected)
+
+    return True, (
+        f"Synced {sleep_count} sleep ({sleep_rejected} rejected) + "
+        f"{daily_count} daily health ({daily_rejected} rejected) records"
+    )
 
 
 def main():
     ts = datetime.now().isoformat()
-    print(f"[{ts}] Starting COROS daily sync...")
+    log.info("sync_started", ts=ts)
 
     email = os.environ.get("COROS_EMAIL")
     password = os.environ.get("COROS_PASSWORD")
     if not email or not password:
-        print(f"[{ts}] SKIP: COROS_EMAIL and COROS_PASSWORD required")
+        log.critical("sync_skipped_missing_credentials")
         return 1
 
-    print(f"[{ts}] Logging in as {email}...")
+    log.info("login_attempt", email=email)
     ok, out, err = login(email, password)
     if not ok:
-        print(f"[{ts}] Login failed: {err or out}")
+        log.critical("login_failed", error=err or out)
         return 1
-    print(f"[{ts}] Login: {out}")
+    log.info("login_ok", detail=out[:200])
 
-    ok, msg = sync_activities()
-    print(f"[{ts}] Activities: {msg}")
+    # Phase 0: each sync step is isolated so a bug/exception in one (e.g.
+    # a new COROS response format breaking the activities regex) doesn't
+    # take down the other. Both are attempted; overall exit code reflects
+    # whether *any* step failed so CI/Actions still surfaces a red run.
+    had_failure = False
 
-    ok, msg = sync_sleep_and_health()
-    print(f"[{ts}] Sleep/Health: {msg}")
+    try:
+        ok, msg = sync_activities()
+        (log.info if ok else log.error)("activities_sync_done", ok=ok, message=msg)
+        had_failure = had_failure or not ok
+    except Exception as e:
+        log.error("activities_sync_exception", error=str(e))
+        had_failure = True
 
-    print(f"[{ts}] Sync complete")
+    try:
+        ok, msg = sync_sleep_and_health()
+        (log.info if ok else log.error)("sleep_health_sync_done", ok=ok, message=msg)
+        had_failure = had_failure or not ok
+    except Exception as e:
+        log.error("sleep_health_sync_exception", error=str(e))
+        had_failure = True
+
+    if had_failure:
+        log.warning("sync_completed_with_errors")
+        return 2
+
+    log.info("sync_completed_ok")
     return 0
 
 
