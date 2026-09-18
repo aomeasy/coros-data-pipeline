@@ -312,7 +312,12 @@ def analyze_skin_temp(records: list, window: int = 7) -> dict:
 
     return {"latest_deviation": latest, "avg_recent": avg_recent, "flag": flag}
 
-
+DEFAULT_RECOVERY_WEIGHTS = {
+    "hrv": 0.30,
+    "rhr": 0.20,
+    "sleep_performance": 0.25,
+    "sleep_efficiency": 0.15,
+}
 # =============================================================================
 # 6. Recovery Composite Score
 # =============================================================================
@@ -327,15 +332,19 @@ def recovery_score(
     spo2_flag: str = "normal",
     skin_temp_flag: str = "normal",
     resp_rate_z: float = 0,
+    weights: dict = None,
 ) -> dict:
     """
-    Weighted composite:
-      HRV        30%
-      RHR        20%
-      Sleep Perf 25%
-      Sleep Eff  15%
-      SpO2/Temp  10% (penalty เท่านั้น)
+    Weighted composite (ค่า default อยู่ใน DEFAULT_RECOVERY_WEIGHTS ด้านบนไฟล์...):
+      HRV / RHR / Sleep Perf / Sleep Eff  (รวม = 1.0, normalize อัตโนมัติ)
+      SpO2/Temp/Resp  = penalty เท่านั้น ไม่อยู่ใน weighted sum
     """
+    w = {**DEFAULT_RECOVERY_WEIGHTS, **(weights or {})}
+    total = sum(w.values())
+    if total <= 0:
+        raise ValueError("recovery weights must sum to a positive number")
+    w = {k: v / total for k, v in w.items()}
+
     # Default baselines to neutral if not provided
     if hrv_baseline is None:
         hrv_baseline = {"mean": 50, "stdev": 10}
@@ -358,13 +367,13 @@ def recovery_score(
     sp = sleep_performance_pct if sleep_performance_pct is not None else 75
     se = sleep_efficiency_pct if sleep_efficiency_pct is not None else 80
 
+ 
     base_composite = (
-        hrv_component * 0.30
-        + rhr_component * 0.20
-        + sp * 0.25
-        + se * 0.15
+        hrv_component * w["hrv"]
+        + rhr_component * w["rhr"]
+        + sp * w["sleep_performance"]
+        + se * w["sleep_efficiency"]
     )
-
     # Penalty from SpO2/skin temp/respiratory
     penalty = 0
     if spo2_flag == "review_recommended":
@@ -383,6 +392,7 @@ def recovery_score(
         "recovery_score": round(composite, 1),
         "band": band,
         "penalty_applied": penalty,
+        "weights_used": w,          # <-- ใหม่
         "components": {
             "hrv_score": round(hrv_component, 1),
             "rhr_score": round(rhr_component, 1),
