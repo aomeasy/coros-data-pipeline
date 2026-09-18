@@ -57,14 +57,61 @@ def ln_rmssd(hrv_raw_ms: Optional[float]) -> Optional[float]:
 def classify_context(record: dict, hard_load_threshold: float = 150) -> str:
     """
     แยก record ว่าเป็น 'rest' หรือ 'hard_training' วันก่อนหน้า
-    ใช้ training_load_prev_day ที่มีอยู่แล้ว (ดู sleep_analysis.calculate_sleep_need)
-    threshold ปรับได้ตามผู้ใช้แต่ละคน — ค่าเริ่มต้น 150 อ้างอิงจากตัวอย่าง
-    เดียวกับ load_baseline ใน calculate_sleep_need()
+    ใช้ training_load_prev_day ถ้ามี (จะมีจริงหลัง Phase 2 สร้าง daily_strain แล้ว)
+    ถ้ายังไม่มี (สถานะปัจจุบันของ DB ณ Phase 1) ให้ merge ค่า proxy เข้ามาก่อน
+    ด้วย attach_training_load_proxy() แล้วค่อยเรียกฟังก์ชันนี้
     """
     load = record.get("training_load_prev_day")
     if load is None:
         return "unknown"
     return "hard_training" if load >= hard_load_threshold else "rest"
+
+
+def estimate_training_load_proxy(activities: list, target_date: str) -> float:
+    """
+    Proxy ชั่วคราวสำหรับ training load ก่อน Phase 2 (Strain Engine) จะเสร็จ
+    เพราะตอนนี้ DB (coros_db.py) ยังไม่มีตาราง daily_strain / คอลัมน์ training_load
+    เลย — ใช้ข้อมูลจากตาราง `activities` ที่มีอยู่แล้วแทน (แบบ TRIMP หยาบๆ)
+
+    สูตร: sum( duration_s / 60 * (avg_hr / 100) ) ของทุก activity ที่ start_time
+    ตรงกับ target_date (YYYY-MM-DD)
+
+    หมายเหตุ: นี่เป็นของชั่วคราวเท่านั้น — เมื่อ Phase 2 สร้าง daily_strain
+    เสร็จแล้ว ให้เปลี่ยนไปอ่านจากตารางนั้นแทน แล้วลบฟังก์ชันนี้ทิ้งได้เลย
+    """
+    load = 0.0
+    for a in activities:
+        start = a.get("start_time", "") or ""
+        if not start.startswith(target_date):
+            continue
+        duration_min = (a.get("duration_s") or 0) / 60
+        avg_hr = a.get("avg_hr") or 0
+        if duration_min and avg_hr:
+            load += duration_min * (avg_hr / 100)
+    return round(load, 1)
+
+
+def attach_training_load_proxy(sleep_records: list, activities: list) -> list:
+    """
+    Merge training_load_prev_day (proxy) เข้าไปใน sleep_records แต่ละวัน
+    โดยดูจาก activities ของ "วันก่อนหน้า" วันที่นอน (date ใน sleep_data
+    คือคืนที่นอน ซึ่งตามหลังวันออกกำลังกาย)
+    คืน list ใหม่ (ไม่แก้ของเดิม in-place)
+    """
+    from datetime import datetime, timedelta
+
+    out = []
+    for r in sleep_records:
+        r2 = dict(r)
+        date_str = r.get("date", "")
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d")
+            prev_day = (d - timedelta(days=1)).strftime("%Y-%m-%d")
+            r2["training_load_prev_day"] = estimate_training_load_proxy(activities, prev_day)
+        except (ValueError, TypeError):
+            r2["training_load_prev_day"] = None
+        out.append(r2)
+    return out
 
 
 # =============================================================================
