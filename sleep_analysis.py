@@ -311,13 +311,7 @@ def analyze_skin_temp(records: list, window: int = 7) -> dict:
         flag = "lowered"
 
     return {"latest_deviation": latest, "avg_recent": avg_recent, "flag": flag}
-
-DEFAULT_RECOVERY_WEIGHTS = {
-    "hrv": 0.30,
-    "rhr": 0.20,
-    "sleep_performance": 0.25,
-    "sleep_efficiency": 0.15,
-}
+ 
 # =============================================================================
 # 6. Recovery Composite Score
 # =============================================================================
