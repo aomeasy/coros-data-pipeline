@@ -177,6 +177,8 @@ def api_analysis():
     latest = sleep_for_analysis[-1] if sleep_for_analysis else {}
     latest_daily = daily_records[-1] if daily_records else {}
 
+
+
     training_load_prev_day = latest_strain.get("trimp") if latest_strain else 0
     sleep_need = sleep_analysis.calculate_sleep_need(
         training_load=training_load_prev_day or 0,
@@ -201,6 +203,7 @@ def api_analysis():
 
     hrv_today_ln = baseline_engine.ln_rmssd(latest.get("hrv"))
 
+    # Training load ส่งเข้า recovery_score โดยตรง — ก่อนที่ HRV จะเปลี่ยน
     rec_score = sleep_analysis.recovery_score(
         hrv_today=hrv_today_ln,
         hrv_baseline=baseline_hrv,
@@ -211,6 +214,7 @@ def api_analysis():
         spo2_flag=spo2_flag,
         skin_temp_flag=skin_temp_flag,
         resp_rate_z=resp_rate_z,
+        training_load=training_load_prev_day or 0,   # ← เพิ่มตรงนี้
     )
 
     # SQI
