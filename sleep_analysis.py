@@ -327,13 +327,19 @@ def recovery_score(
     skin_temp_flag: str = "normal",
     resp_rate_z: float = 0,
     weights: dict = None,
+    training_load: float = 0.0,
+    load_baseline: float = None,
 ) -> dict:
     """
-    Weighted composite (ค่า default อยู่ใน DEFAULT_RECOVERY_WEIGHTS ด้านบนไฟล์...):
+    Weighted composite:
       HRV / RHR / Sleep Perf / Sleep Eff  (รวม = 1.0, normalize อัตโนมัติ)
       SpO2/Temp/Resp  = penalty เท่านั้น ไม่อยู่ใน weighted sum
+      Training Load   = penalty โดยตรง (โหลดหนักเมื่อวาน ลด recovery คาดการณ์ก่อนเห็น HRV)
     """
-    w = {**DEFAULT_RECOVERY_WEIGHTS, **(weights or {})}
+    import recovery_config
+    default_weights = recovery_config.DEFAULT_RECOVERY_WEIGHTS
+    w = {**default_weights, **(weights or {})}
+
     total = sum(w.values())
     if total <= 0:
         raise ValueError("recovery weights must sum to a positive number")
@@ -361,13 +367,30 @@ def recovery_score(
     sp = sleep_performance_pct if sleep_performance_pct is not None else 75
     se = sleep_efficiency_pct if sleep_efficiency_pct is not None else 80
 
- 
+
+
+
     base_composite = (
         hrv_component * w["hrv"]
         + rhr_component * w["rhr"]
         + sp * w["sleep_performance"]
         + se * w["sleep_efficiency"]
     )
+
+    # Training load penalty — ถ้าโหลดเมื่อวานเกิน baseline ลด recovery โดยตรง
+    # (ก่อนที่ HRV จะเปลี่ยน — เป็น early indicator ของ fatigue)
+    if load_baseline is None:
+        import recovery_config
+        load_baseline = recovery_config.DEFAULT_LOAD_BASELINE
+    if training_load and load_baseline and training_load > load_baseline:
+        excess_ratio = (training_load - load_baseline) / load_baseline
+        training_load_penalty = min(
+            recovery_config.TRAINING_LOAD_PENALTY_MAX,
+            excess_ratio * recovery_config.TRAINING_LOAD_PENALTY_SLOPE
+        )
+    else:
+        training_load_penalty = 0.0
+
     # Penalty from SpO2/skin temp/respiratory
     penalty = 0
     if spo2_flag == "review_recommended":
@@ -379,14 +402,16 @@ def recovery_score(
     if resp_rate_z and abs(resp_rate_z) >= 1.5:
         penalty += 5
 
-    composite = max(0, base_composite - penalty)
+    total_penalty = penalty + training_load_penalty
+    composite = max(0, base_composite - total_penalty)
     band = "green" if composite >= 67 else "yellow" if composite >= 34 else "red"
 
     return {
         "recovery_score": round(composite, 1),
         "band": band,
         "penalty_applied": penalty,
-        "weights_used": w,          # <-- ใหม่
+        "training_load_penalty": round(training_load_penalty, 1),
+        "weights_used": w,
         "components": {
             "hrv_score": round(hrv_component, 1),
             "rhr_score": round(rhr_component, 1),
@@ -394,6 +419,7 @@ def recovery_score(
             "sleep_efficiency": round(se, 1),
         },
     }
+
 
 
 # =============================================================================
