@@ -932,3 +932,96 @@ def calculate_sqi(records: list) -> dict:
     band = "good" if sqi >= 80 else "fair" if sqi >= 60 else "poor"
 
     return {"sqi": sqi, "band": band}
+
+
+# =============================================================================
+# 12. Illness Risk Score
+# =============================================================================
+
+def compute_illness_risk(record: dict, baselines: dict) -> dict:
+    """
+    Illness Risk Score — รวม 4 สัญญาณพร้อมกัน ≥ 3 = ความเชื่อมั่นสูง
+    """
+    signals = []
+
+    # 1. RHR สูงผิดปกติ
+    rhr = record.get("resting_hr")
+    rhr_base = baselines.get("resting_hr")
+    if rhr and rhr_base:
+        z = z_score(rhr, rhr_base)
+        if z is not None and z >= 1.5:
+            signals.append("rhr_high")
+
+    # 2. HRV ต่ำผิดปกติ
+    hrv = record.get("hrv")
+    hrv_base = baselines.get("hrv_ms")
+    if hrv and hrv_base:
+        z = z_score(hrv, hrv_base)
+        if z is not None and z <= -1.5:
+            signals.append("hrv_low")
+
+    # 3. Skin temp สูง
+    skin_temp = record.get("skin_temp_deviation_c")
+    if skin_temp is not None and skin_temp >= 0.5:
+        signals.append("skin_temp_high")
+
+    # 4. Resp rate สูง
+    resp_rate = record.get("respiratory_rate")
+    resp_base = baselines.get("respiratory_rate")
+    if resp_rate and resp_base:
+        z = z_score(resp_rate, resp_base)
+        if z is not None and z >= 1.5:
+            signals.append("resp_rate_high")
+
+    risk_score = len(signals)
+    level = "high" if risk_score >= 4 else "medium" if risk_score >= 3 else "low" if risk_score >= 2 else "none"
+
+    return {
+        "risk_score": risk_score,
+        "risk_level": level,
+        "signals": signals,
+    }
+
+
+# =============================================================================
+# 13. Overtraining Detection
+# =============================================================================
+
+def detect_overtraining(
+    strain_series: list,
+    recovery_scores: list,
+    sleep_records: list,
+    window: int = 7,
+) -> dict:
+    """
+    Overtraining Flag — รวม ACWR + HRV trend + Recovery ต่ำ ≥ 2 สัญญาณ
+    """
+    flags = []
+
+    # 1. ACWR > 1.5 ต่อเนื่อง
+    if strain_series and len(strain_series) >= window:
+        recent_acwr = [s.get("acwr") for s in strain_series[-window:] if s.get("acwr")]
+        if len(recent_acwr) >= 5 and all(a > 1.5 for a in recent_acwr[-5:]):
+            flags.append("acwr_high")
+
+    # 2. HRV แนวโน้มลด
+    hrv_vals = [r.get("hrv") for r in sleep_records[-7:] if r.get("hrv")]
+    if len(hrv_vals) >= 5:
+        avg_first = sum(hrv_vals[:3]) / 3
+        avg_last = sum(hrv_vals[-3:]) / 3
+        if avg_last < avg_first * 0.85:
+            flags.append("hrv_declining")
+
+    # 3. Recovery ต่ำ < 40 ≥ 4 วัน
+    if recovery_scores and len(recovery_scores) >= 4:
+        low_count = sum(1 for r in recovery_scores[-4:] if r.get("recovery_score", 50) < 40)
+        if low_count >= 4:
+            flags.append("recovery_low")
+
+    overtraining_risk = len(flags)
+    level = "high" if overtraining_risk >= 3 else "medium" if overtraining_risk >= 2 else "low" if overtraining_risk >= 1 else "none"
+
+    return {
+        "risk_level": level,
+        "flags": flags,
+    }

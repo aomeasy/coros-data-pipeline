@@ -293,14 +293,26 @@ def api_analysis():
     # Bedtime consistency
     consistency = sleep_analysis.bedtime_consistency(sleep_for_analysis)
 
-    
+    # Phase 5 — Illness & Overtraining Detection
+    illness_baselines = {
+        "resting_hr": baseline_rhr,
+        "hrv_ms": baseline_hrv,
+        "respiratory_rate": baseline_resp_rate,
+    }
+    illness_risk = sleep_analysis.compute_illness_risk(latest, illness_baselines)
+
+    # Phase 4 — Training Analytics (rec_val needed for both overtraining and training)
+    rec_val = rec_score.get("recovery_score", 50) if isinstance(rec_score, dict) else 50
+
+    # Overtraining detection
+    recovery_scores_list = [{"recovery_score": rec_val}]
+    overtraining = sleep_analysis.detect_overtraining(strain_series, recovery_scores_list, sleep_for_analysis)
+
     # Rolling averages
     eff_trend = sleep_analysis.rolling_average(
         sleep_for_analysis, sleep_analysis.sleep_efficiency, window=7
     )
 
-    # Phase 4 — Training Analytics
-    rec_val = rec_score.get("recovery_score", 50) if isinstance(rec_score, dict) else 50
     training_analytics_result = training_analytics.compute_training_analytics(
         activities, strain_series, sleep_for_analysis,
         recovery_score=rec_val, ctl_baseline=150
@@ -326,6 +338,8 @@ def api_analysis():
         "anomalies": anomalies,
         "coach_recommendations": coach_recommendations,
         "bedtime_consistency": consistency,
+        "illness_risk": illness_risk,
+        "overtraining": overtraining,
         "efficiency_trend": eff_trend,
         "activities": activities,
         "daily_health": daily_records,

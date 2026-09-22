@@ -121,6 +121,15 @@ def init_db():
         );
 
         CREATE INDEX IF NOT EXISTS idx_strain_date ON daily_strain(date);
+
+        CREATE TABLE IF NOT EXISTS alert_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            alert_type TEXT NOT NULL,
+            risk_level TEXT NOT NULL,
+            signals TEXT,
+            created_at TEXT NOT NULL
+        );
     """)
     # Backward-compatible migration: ถ้า DB เดิมมี daily_health อยู่แล้วก่อนเพิ่มคอลัมน์นี้
     # (ตาราง CREATE TABLE IF NOT EXISTS จะไม่เติมคอลัมน์ใหม่ให้ของเดิมที่มีอยู่แล้ว)
@@ -133,6 +142,18 @@ def init_db():
         conn.execute("ALTER TABLE daily_health ADD COLUMN spo2_avg REAL")
     if "spo2_min" not in existing_cols:
         conn.execute("ALTER TABLE daily_health ADD COLUMN spo2_min REAL")
+    conn.commit()
+    conn.close()
+
+
+def store_alert(date, alert_type, risk_level, signals=None):
+    """เก็บ alert log ลง database"""
+    conn = get_conn()
+    import json
+    conn.execute(
+        """INSERT INTO alert_history (date, alert_type, risk_level, signals, created_at) VALUES (?, ?, ?, ?, ?)""",
+        (date, alert_type, risk_level, json.dumps(signals) if signals else None, datetime.now().isoformat())
+    )
     conn.commit()
     conn.close()
 
