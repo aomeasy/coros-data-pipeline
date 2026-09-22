@@ -22,6 +22,7 @@ import sleep_analysis
 import breath_analysis
 import strain_engine  # Phase 2.2
 import baseline_engine   # Phase 1 — EWMA + confidence band (เพิ่มใหม่)
+import training_analytics  # Phase 4
 
 app = Flask(__name__, static_folder=DOCS_DIR, static_url_path="")
 
@@ -298,6 +299,13 @@ def api_analysis():
         sleep_for_analysis, sleep_analysis.sleep_efficiency, window=7
     )
 
+    # Phase 4 — Training Analytics
+    rec_val = rec_score.get("recovery_score", 50) if isinstance(rec_score, dict) else 50
+    training_analytics_result = training_analytics.compute_training_analytics(
+        activities, strain_series, sleep_for_analysis,
+        recovery_score=rec_val, ctl_baseline=150
+    )
+
     return jsonify({
         "sleep_metrics": sleep_metrics,
         "baselines": {
@@ -321,6 +329,7 @@ def api_analysis():
         "efficiency_trend": eff_trend,
         "activities": activities,
         "daily_health": daily_records,
+        "training_analytics": training_analytics_result,
     })
 
 
