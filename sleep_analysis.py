@@ -315,6 +315,7 @@ def analyze_skin_temp(records: list, window: int = 7) -> dict:
 # =============================================================================
 # 6. Recovery Composite Score
 # =============================================================================
+ 
 
 def recovery_score(
     hrv_today: float = None,
@@ -329,7 +330,10 @@ def recovery_score(
     weights: dict = None,
     training_load: float = 0.0,
     load_baseline: float = None,
+    resp_rate_trend: float = 0.0,        
 ) -> dict:
+
+    
     """
     Weighted composite:
       HRV / RHR / Sleep Perf / Sleep Eff  (รวม = 1.0, normalize อัตโนมัติ)
@@ -403,7 +407,15 @@ def recovery_score(
         penalty += 5
 
     total_penalty = penalty + training_load_penalty
-    composite = max(0, base_composite - total_penalty)
+ 
+    # Respiratory rate trend penalty
+    resp_trend_penalty = 0.0
+    if resp_rate_trend > 0.15:
+        resp_trend_penalty = min(8, round(resp_rate_trend * 20, 1))
+
+    composite = max(0, base_composite - total_penalty - resp_trend_penalty)
+
+    
     band = "green" if composite >= 67 else "yellow" if composite >= 34 else "red"
 
     return {
@@ -411,6 +423,7 @@ def recovery_score(
         "band": band,
         "penalty_applied": penalty,
         "training_load_penalty": round(training_load_penalty, 1),
+        "resp_rate_trend_penalty": resp_trend_penalty,   
         "weights_used": w,
         "components": {
             "hrv_score": round(hrv_component, 1),
