@@ -177,12 +177,20 @@ def api_analysis():
     latest = sleep_for_analysis[-1] if sleep_for_analysis else {}
     latest_daily = daily_records[-1] if daily_records else {}
 
-
-
     training_load_prev_day = latest_strain.get("trimp") if latest_strain else 0
+
+    # Strain 3 วัน (สำหรับ sleep need)
+    strain_3day = []
+    if strain_series:
+        for s in strain_series[-3:]:
+            if s.get("trimp"):
+                strain_3day.append(s["trimp"])
+
     sleep_need = sleep_analysis.calculate_sleep_need(
         training_load=training_load_prev_day or 0,
+        strain_3day=strain_3day if len(strain_3day) >= 2 else None,
     )
+    
     sp_pct = sleep_analysis.sleep_performance(
         actual_min=latest.get("duration_min", 0) or 0,
         need_min=sleep_need["sleep_need_min"],
@@ -269,13 +277,22 @@ def api_analysis():
         "hrv_ms": baseline_hrv,
         "resting_hr": baseline_rhr,
     }
+    
     anomalies = []
     if sleep_for_analysis:
         anomalies = sleep_analysis.detect_anomalies(sleep_for_analysis[-1], baselines_dict)
 
+    # Sleep Coach Recommendations
+    coach_recommendations = []
+    if sleep_for_analysis:
+        coach_recommendations = sleep_analysis.generate_sleep_coach_recommendations(
+            sleep_for_analysis, journals=journals, anomalies=anomalies
+        )
+
     # Bedtime consistency
     consistency = sleep_analysis.bedtime_consistency(sleep_for_analysis)
 
+    
     # Rolling averages
     eff_trend = sleep_analysis.rolling_average(
         sleep_for_analysis, sleep_analysis.sleep_efficiency, window=7
@@ -299,6 +316,7 @@ def api_analysis():
         "breath_metrics": breath_metrics,
         "breathing_efficiency": breath_eff,
         "anomalies": anomalies,
+        "coach_recommendations": coach_recommendations,
         "bedtime_consistency": consistency,
         "efficiency_trend": eff_trend,
         "activities": activities,
