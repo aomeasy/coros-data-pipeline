@@ -191,18 +191,26 @@ def calculate_sleep_need(
     load_baseline: float = 150,
     prior_debt_min: int = 0,
     nap_min: int = 0,
+    strain_3day: list = None,
 ) -> dict:
-    """
-    Sleep Need แบบ dynamic
-    ถ้า training load สูงกว่า baseline → เพิ่ม need
-    """
     load_excess = max(0, training_load - load_baseline)
     strain_adjustment = int((load_excess / 50) * 10)
-    total_need = base_need_min + strain_adjustment + prior_debt_min - nap_min
+
+    # ถ้ามี strain 3 วัน → ดู residual load ที่ยังไม่ฟื้น
+    residual_adjustment = 0
+    if strain_3day and len(strain_3day) >= 2:
+        avg_strain = sum(strain_3day) / len(strain_3day)
+        if avg_strain > load_baseline:
+            residual = avg_strain - load_baseline
+            residual_adjustment = int((residual / 50) * 8)
+
+    total_need = base_need_min + strain_adjustment + residual_adjustment + prior_debt_min - nap_min
     return {
         "sleep_need_min": max(total_need, 360),
-        "strain_adjustment_min": strain_adjustment,
+        "strain_adjustment_min": strain_adjustment + residual_adjustment,
+        "residual_adjustment_min": residual_adjustment,
     }
+
 
 
 def cumulative_sleep_debt(
@@ -564,31 +572,69 @@ def rolling_average(records: list, metric_fn: Callable, window: int = 7) -> list
 
 def bedtime_consistency(records: list, window: int = 7) -> Optional[float]:
     """
-    คำนวณ Bedtime Consistency Score (0-100)
-    stdev ของ bedtime < 60 min = ดีมาก
+    คำนวณ Bedtime Consistency Score (0-100) แบบ Circadian
+    รวม bedtime + wake time + weighted (ล่าสุดมากกว่า)
     """
-    minutes_from_midnight = []
-    for r in records[-window:]:
-        sleep_start = r.get("sleep_start", "")
-        if not sleep_start:
-            continue
-        try:
-            if isinstance(sleep_start, str):
-                t = datetime.fromisoformat(sleep_start.replace("Z", "+00:00"))
-            else:
-                t = sleep_start
-            m = t.hour * 60 + t.minute
-            if t.hour < 12:  # Assume late night / past midnight
-                m += 1440
-            minutes_from_midnight.append(m)
-        except (ValueError, TypeError):
-            continue
+    bedtimes = []
+    wake_times = []
 
-    if len(minutes_from_midnight) < 3:
+    for i, r in enumerate(records[-window:]):
+        w = (i + 1) / window  # weight: ล่าสุดมากกว่า
+        sleep_start = r.get("sleep_start", "")
+        sleep_end = r.get("sleep_end", "")
+
+        if sleep_start:
+            try:
+                if isinstance(sleep_start, str):
+                    t = datetime.fromisoformat(sleep_start.replace("Z", "+00:00"))
+                else:
+                    t = sleep_start
+                m = t.hour * 60 + t.minute
+                if t.hour < 12:
+                    m += 1440
+                bedtimes.append((m, w))
+            except (ValueError, TypeError):
+                pass
+
+        if sleep_end:
+            try:
+                if isinstance(sleep_end, str):
+                    t = datetime.fromisoformat(sleep_end.replace("Z", "+00:00"))
+                else:
+                    t = sleep_end
+                wake_times.append((t.hour * 60 + t.minute, w))
+            except (ValueError, TypeError):
+                pass
+
+    if len(bedtimes) < 3:
         return None
-    stdev = statistics.stdev(minutes_from_midnight)
-    score = max(0, 100 - stdev * 1.2)
-    return round(score, 1)
+
+    # Weighted stdev for bedtime
+    w_sum = sum(w for _, w in bedtimes)
+    weighted_mean = sum(m * w for m, w in bedtimes) / w_sum
+    weighted_var = sum(w * (m - weighted_mean) ** 2 for m, w in bedtimes) / w_sum
+    bedtime_score = max(0, 100 - weighted_var ** 0.5 * 1.2)
+
+    # Wake time bonus (ถ้ามี)
+    if len(wake_times) >= 3:
+        w_sum = sum(w for _, w in wake_times)
+        wake_mean = sum(m * w for m, w in wake_times) / w_sum
+        wake_var = sum(w * (m - wake_mean) ** 2 for m, w in wake_times) / w_sum
+        wake_score = max(0, 100 - wake_var ** 0.5 * 1.2)
+        return round((bedtime_score * 0.7 + wake_score * 0.3), 1)
+
+    return round(bedtime_score, 1)
+
+
+
+
+
+
+
+
+
+
+
 
 
 # =============================================================================
@@ -657,6 +703,125 @@ def should_alert(
             return False
     return True
 
+# =============================================================================
+# 9.5 Sleep Coach Recommendation Engine
+# =============================================================================
+
+def generate_sleep_coach_recommendations(
+    records: list,
+    journals: list = None,
+    anomalies: list = None,
+) -> list:
+    """
+    Sleep Coach — แปล anomaly + journal correlation เป็นคำแนะนำเจาะจง
+    """
+    recommendations = []
+    if not records or len(records) < 3:
+        return recommendations
+
+    latest = records[-1]
+
+    # 1. Bedtime consistency ต่ำ 5 วัน
+    recent_bedtimes = []
+    for r in records[-5:]:
+        sleep_start = r.get("sleep_start", "")
+        if sleep_start:
+            try:
+                if isinstance(sleep_start, str):
+                    t = datetime.fromisoformat(sleep_start.replace("Z", "+00:00"))
+                else:
+                    t = sleep_start
+                recent_bedtimes.append(t.hour * 60 + t.minute)
+            except (ValueError, TypeError):
+                pass
+
+    if len(recent_bedtimes) >= 3:
+        avg_bedtime = sum(recent_bedtimes) / len(recent_bedtimes)
+        bedtime_var = sum((m - avg_bedtime) ** 2 for m in recent_bedtimes) / len(recent_bedtimes)
+        if bedtime_var > 3600:  # stdev > 60 min
+            target = int(avg_bedtime)
+            target_h = (target // 60) % 24
+            target_m = target % 60
+            recommendations.append({
+                "type": "bedtime_consistency",
+                "priority": "high",
+                "message": f"🕐 นอนไม่ตรงเวลา 5 วันล่าสุด — ลองนอนตรงๆ ประมาณ {target_h:02d}:{target_m:02d}"
+            })
+
+    # 2. Deep sleep ต่ำกว่า 10% 3 วันติด
+    deep_pcts = [r.get("deep_sleep_pct", 0) or 0 for r in records[-3:]]
+    if all(d < 10 for d in deep_pcts):
+        recommendations.append({
+            "type": "low_deep_sleep",
+            "priority": "high",
+            "message": "😴 Deep sleep ต่ำมาก 3 วันติด — ลดการออกกำลังกายหนักก่อนนอน หรือลดความร้อนห้องนอน"
+        })
+
+    # 3. Nap ยาวเกิน 30 นาที
+    nap_total = latest.get("nap_min", 0) or 0
+    if nap_total > 30:
+        recommendations.append({
+            "type": "long_nap",
+            "priority": "medium",
+            "message": "💤 Nap ยาวเกินไป — จำกัดไว้ 20-30 นาที พอ จะไม่กระทบนอนหลัก"
+        })
+
+    # 4. Alcohol effect
+    if journals:
+        journal_map = {j["date"]: j for j in journals}
+        alcohol_eff = correlate_journal_factor(records, journals, "alcohol_units", sleep_efficiency)
+        if not alcohol_eff.get("insufficient_data") and alcohol_eff.get("difference", 0) < -5:
+            recommendations.append({
+                "type": "alcohol",
+                "priority": "high",
+                "message": "🍺 ดื่มแอลกอฮอล์ก่อนนอน → Sleep Efficiency ลด > 5% — ลดหรือเลื่อน"
+            })
+
+    # 5. Stress effect
+    if journals:
+        stress_eff = correlate_journal_factor(records, journals, "stress_level", sleep_efficiency)
+        if not stress_eff.get("insufficient_data") and stress_eff.get("difference", 0) < -5:
+            recommendations.append({
+                "type": "stress",
+                "priority": "medium",
+                "message": "😰 Stress สูงก่อนนอน → นอนไม่สนิท — ลอง relaxation ก่อนนอน"
+            })
+
+    # 6. Caffeine after 14:00
+    if journals:
+        caffeine_eff = correlate_journal_factor(records, journals, "caffeine_after_14", sleep_efficiency)
+        if not caffeine_eff.get("insufficient_data") and caffeine_eff.get("difference", 0) < -5:
+            recommendations.append({
+                "type": "caffeine",
+                "priority": "medium",
+                "message": "☕ คาเฟอินหลัง 14:00 → นอนลด — งดหลังเที่ยง"
+            })
+
+    # 7. Anomaly-based recommendations
+    if anomalies:
+        for a in anomalies:
+            if a["type"] == "low_sleep_efficiency":
+                recommendations.append({
+                    "type": "efficiency",
+                    "priority": "high",
+                    "message": "📉 Sleep Efficiency ต่ำ — ลดเวลาอยู่บนเตียงตอนไม่ได้นอน"
+                })
+            elif a["type"] == "deep_sleep_low":
+                recommendations.append({
+                    "type": "deep",
+                    "priority": "high",
+                    "message": "🧠 Deep sleep ต่ำ — อาจต้องฟื้นฟูร่างกาย"
+                })
+
+    # Deduplicate by type, keep highest priority
+    seen = {}
+    priority_order = {"high": 3, "medium": 2, "low": 1}
+    for r in recommendations:
+        t = r["type"]
+        if t not in seen or priority_order[r["priority"]] > priority_order[seen[t]["priority"]]:
+            seen[t] = r
+
+    return sorted(seen.values(), key=lambda x: -priority_order[x["priority"]])
 
 # =============================================================================
 # 10. Weekly Report Generator
