@@ -204,8 +204,16 @@ def api_analysis():
     hrv_today_ln = baseline_engine.ln_rmssd(latest.get("hrv"))
 
     # Training load ส่งเข้า recovery_score โดยตรง — ก่อนที่ HRV จะเปลี่ยน
+ 
+
+    # Respiratory rate trend (7-day slope)
+    recent_rr = [d.get("respiratory_rate") for d in daily_records[-7:] if d.get("respiratory_rate")]
+    resp_rate_trend = 0.0
+    if len(recent_rr) >= 5:
+        resp_rate_trend = round((recent_rr[-1] - recent_rr[0]) / len(recent_rr), 3)
+
     rec_score = sleep_analysis.recovery_score(
-        hrv_today=hrv_today_ln,
+        hrv_today=hrv_today_ln,       
         hrv_baseline=baseline_hrv,
         rhr_today=latest.get("resting_hr"),
         rhr_baseline=baseline_rhr,
@@ -214,7 +222,8 @@ def api_analysis():
         spo2_flag=spo2_flag,
         skin_temp_flag=skin_temp_flag,
         resp_rate_z=resp_rate_z,
-        training_load=training_load_prev_day or 0,   # ← เพิ่มตรงนี้
+        training_load=training_load_prev_day or 0,
+        resp_rate_trend=resp_rate_trend,       # ← เพิ่ม
     )
 
     # SQI
