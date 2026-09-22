@@ -49,7 +49,12 @@ tr:hover td{background:#f9fafb}
 canvas{max-width:100%}
 .gauge-wrap{text-align:center;padding:16px}
 .gauge-needle{width:4px;height:60px;background:var(--accent);position:absolute;left:50%;bottom:0;transform-origin:bottom center;transition:transform 0.5s}
+body.sidebar-hidden .sidebar{transform:translateX(-240px)}
+body.sidebar-hidden .main{margin-left:0}
+.sidebar{transition:transform 0.2s ease}
+.main{transition:margin-left 0.2s ease}
 </style>
+
 </head>
 <body>
 <nav class="sidebar">
@@ -64,7 +69,8 @@ canvas{max-width:100%}
 <li><a href="#" data-page="weekly">Weekly Report</a></li>
 </ul>
 </nav>
-<main class="main" id="main"></main>
-<script src="app.js"></script>
+<main class="main" id="main">
+<button onclick="document.body.classList.toggle('sidebar-hidden')" style="position:fixed;top:16px;left:16px;z-index:100;background:#1a1a2e;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:16px;line-height:1">☰</button>
+
 </body>
 </html>
