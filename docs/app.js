@@ -238,15 +238,7 @@ function renderWeekly(main) {
     '- Total Steps: ' + totalSteps.toLocaleString() + '\n' +
     '</div>';
   main.appendChild(sect);
-}
-
-// ===== SIDEBAR TOGGLE =====
-document.addEventListener('keydown', e => {
-  if (e.ctrlKey && e.key === 'b') {
-    e.preventDefault();
-    document.body.classList.toggle('sidebar-hidden');
-  }
-});
+} 
 
 // ===== INIT =====
 loadData();
