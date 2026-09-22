@@ -23,6 +23,7 @@ import breath_analysis
 import strain_engine  # Phase 2.2
 import baseline_engine   # Phase 1 — EWMA + confidence band (เพิ่มใหม่)
 import training_analytics  # Phase 4
+import narrative_engine  # Phase 6 — Narrative engine
 
 app = Flask(__name__, static_folder=DOCS_DIR, static_url_path="")
 
@@ -318,6 +319,24 @@ def api_analysis():
         recovery_score=rec_val, ctl_baseline=150
     )
 
+    # Phase 6 — Narrative Generation
+    narrative = narrative_engine.generate_daily_narrative(
+        recovery=rec_score,
+        sleep=latest,
+        strain_series=strain_series,
+        training_analytics=training_analytics_result,
+        illness=illness_risk,
+        overtraining=overtraining,
+        consistency=consistency,
+    )
+
+    weekly_narrative = narrative_engine.generate_weekly_digest(
+        sleep_records=sleep_for_analysis,
+        strain_series=strain_series,
+        training_analytics=training_analytics_result,
+        journal_correlations=journal_correlations,
+    )
+
     return jsonify({
         "sleep_metrics": sleep_metrics,
         "baselines": {
@@ -344,6 +363,8 @@ def api_analysis():
         "activities": activities,
         "daily_health": daily_records,
         "training_analytics": training_analytics_result,
+        "narrative": narrative,
+        "weekly_narrative": weekly_narrative,
     })
 
 
