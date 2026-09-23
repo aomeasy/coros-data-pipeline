@@ -1,20 +1,19 @@
-
-
 // ===== STATE =====
+let corosData = { activities: [], sleep: [], daily: [], journals: [] };
+let analysisData = null;
+
+// ===== SPORT TYPE MAPPING =====
+// เพิ่ม code ตามที่เจอจริงใน data — ต้องเช็ค COROS-MCP docs ให้ครบ
+// (ตอนนี้ยืนยันแล้วว่า 100 = Outdoor Run จากข้อมูลจริง โค้ดอื่นยังเป็นสมมติฐาน)
 const SPORT_TYPE_MAP = {
   100: 'Outdoor Run',
   101: 'Indoor Run',
   102: 'Trail Run',
   103: 'Track Run',
-  // เพิ่มตามโค้ดจริงที่เจอใน data — ต้องเช็ค COROS-MCP docs ให้ครบ
 };
 function sportLabel(code) {
   return SPORT_TYPE_MAP[code] || ('Sport ' + code);
 }
-
-
-let corosData = { activities: [], sleep: [], daily: [], journals: [] };
-let analysisData = null;
 
 // ===== HELPERS =====
 function fmtPace(s) { if (!s) return '-'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; }
@@ -24,6 +23,13 @@ function fmtDate(s) { if (!s) return '-'; return s.replace('T', ' ').substring(0
 function fmtDateShort(s) { if (!s) return '-'; return s.substring(5, 10); }
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; }
 function fmtNum(n) { return n != null && !isNaN(n) ? (Number.isInteger(n) ? n : n.toFixed(1)) : '-'; }
+function statusClass(value, thresholds) {
+  // thresholds = {green: 90, yellow: 70} เช่น sleep efficiency >=90 เขียว, >=70 เหลือง, ต่ำกว่าแดง
+  if (value == null || isNaN(value)) return '';
+  if (value >= thresholds.green) return 'status-green';
+  if (value >= thresholds.yellow) return 'status-yellow';
+  return 'status-red';
+}
 
 // ===== DATA LOADING =====
 async function loadData() {
@@ -32,11 +38,17 @@ async function loadData() {
     if (res.ok) corosData = await res.json();
   } catch (e) { console.error('Load data.json failed:', e); }
 
-  // Fetch analysis from API
+  // export.py รวม analysis fields (recovery_score, narrative, training_analytics ฯลฯ)
+  // ไว้ที่ top level ของ data.json ตัวเดียวกันอยู่แล้ว — ใช้เป็นค่าเริ่มต้นก่อน
+  // เพื่อให้ทำงานได้บน GitHub Pages (static host ไม่มี /api/* endpoint จริง)
+  analysisData = corosData;
+
+  // ถ้ารัน local server (app.py) อยู่ /api/analysis จะให้ข้อมูลสดกว่า data.json
+  // ที่ export ไว้ตอนเช้า — ลองเรียกทับ ถ้าเรียกไม่ได้ (เช่นบน GitHub Pages) ก็ไม่เป็นไร
   try {
     const analysisRes = await fetch('/api/analysis');
     if (analysisRes.ok) analysisData = await analysisRes.json();
-  } catch (e) { console.error('Load /api/analysis failed (local server only):', e); }
+  } catch (e) { console.log('Local /api/analysis not available — using data.json analysis fields'); }
 
   render('dashboard');
 }
@@ -64,6 +76,29 @@ function render(page) {
     case 'activities': renderActivities(main); break;
     case 'weekly': renderWeekly(main); break;
   }
+}
+
+// ===== RECOVERY RING (Whoop-style, ใช้ analysisData.recovery_score) =====
+function renderRecoveryRing(main) {
+  if (!analysisData || !analysisData.recovery_score) return;
+  const rs = analysisData.recovery_score;
+  const pct = rs.recovery_score;
+  if (pct == null || isNaN(pct)) return;
+
+  const bandClass = rs.band === 'green' ? 'status-green' : rs.band === 'yellow' ? 'status-yellow' : 'status-red';
+  const r = 78, circumference = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const offset = circumference - (clamped / 100) * circumference;
+
+  const sect = el('div', 'section recovery-ring-section');
+  sect.innerHTML =
+    '<div class="ring-wrap"><svg width="180" height="180" viewBox="0 0 180 180">' +
+    '<circle class="ring-track" cx="90" cy="90" r="' + r + '"></circle>' +
+    '<circle class="ring-progress ' + bandClass + '" cx="90" cy="90" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
+    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
+    '<div class="ring-status-text ' + bandClass + '">' + String(rs.band || '').toUpperCase() + '</div>';
+  main.appendChild(sect);
 }
 
 // ===== NARRATIVE SECTION =====
@@ -260,8 +295,10 @@ function renderDashboard(main) {
   // Header
   main.appendChild(el('div', 'header', '<div><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>'));
 
-  // Narrative section (Phase 6) — บนสุด
+  // Recovery Ring — Whoop-style, บนสุดของ dashboard
   renderRecoveryRing(main);
+
+  // Narrative section (Phase 6)
   renderNarrativeSection(main);
 
   // Cards
@@ -269,17 +306,15 @@ function renderDashboard(main) {
   cards.appendChild(card('Total Distance', (totalDist / 1000).toFixed(1), 'km'));
   cards.appendChild(card('Avg Pace', fmtPace(avgPace), '/km'));
   cards.appendChild(card('Total Steps', totalSteps.toLocaleString(), ''));
-  cards.appendChild(card('Sleep Efficiency', avgEff + '%', 'average'));
-  cards.appendChild(card('Avg Stress', avgStress, ''));
+  cards.appendChild(card('Sleep Efficiency', avgEff + '%', 'average', statusClass(avgEff, {green:90, yellow:70})));
+  cards.appendChild(card('Avg Stress', avgStress, '', statusClass(100 - avgStress, {green:70, yellow:50}))); // stress: ยิ่งต่ำยิ่งดี เลยกลับค่าก่อนเทียบ threshold
   cards.appendChild(card('Activities', acts.length, 'total'));
 
- 
-
-  // Add Strain card if available
+  // Add Strain card if available (Recovery card ย้ายไปเป็น ring ด้านบนแล้ว ไม่ซ้ำ)
   if (analysisData && analysisData.latest_strain) {
     const ls = analysisData.latest_strain;
     const strainCard = el('div', 'card');
-    strainCard.innerHTML = '<div class="label">Strain</div><div class="val">' + (ls.day_strain != null ? ls.day_strain.toFixed(1) : '-') + '<span style="font-size:12px;color:var(--muted)"> /21</span></div>';
+    strainCard.innerHTML = '<div class="label">Strain</div><div class="val">' + (ls.day_strain != null ? Number(ls.day_strain).toFixed(1) : '-') + '<span style="font-size:12px;color:var(--muted)"> /21</span></div>';
     cards.appendChild(strainCard);
   }
 
@@ -305,14 +340,15 @@ function renderDashboard(main) {
   main.appendChild(sect);
 }
 
-function card(label, val, unit) {
-  return el('div', 'card', '<div class="label">' + label + '</div><div class="val">' + val + '<span style="font-size:12px;color:var(--muted)"> ' + unit + '</span></div>');
+function card(label, val, unit, statusCls) {
+  const valCls = 'val' + (statusCls ? ' ' + statusCls : '');
+  return el('div', 'card', '<div class="label">' + label + '</div><div class="' + valCls + '">' + val + '<span style="font-size:12px;color:var(--muted)"> ' + unit + '</span></div>');
 }
 
 function renderActTable(acts) {
   const table = el('table');
   table.innerHTML = '<tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Pace</th><th>HR</th></tr><tbody>' +
-    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
+    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td><td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
     '</tbody>';
   const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table); return wrap;
 }
@@ -357,31 +393,12 @@ function renderSleep(main) {
   main.appendChild(sect2);
 }
 
-function renderRecoveryRing(main) {
-  if (!analysisData || !analysisData.recovery_score) return;
-  const rs = analysisData.recovery_score;
-  const pct = rs.recovery_score || 0;
-  const bandClass = rs.band === 'green' ? 'status-green' : rs.band === 'yellow' ? 'status-yellow' : 'status-red';
-  const r = 78, circumference = 2 * Math.PI * r;
-  const offset = circumference - (pct / 100) * circumference;
-
-  const sect = el('div', 'section recovery-ring-section');
-  sect.innerHTML =
-    '<div class="ring-wrap"><svg width="180" height="180" viewBox="0 0 180 180">' +
-    '<circle class="ring-track" cx="90" cy="90" r="' + r + '"></circle>' +
-    '<circle class="ring-progress ' + bandClass + '" cx="90" cy="90" r="' + r +
-      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
-    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
-    '<div class="ring-status-text ' + bandClass + '">' + rs.band.toUpperCase() + '</div>';
-  main.appendChild(sect);
-}
-
 // ===== RECOVERY =====
 function renderRecovery(main) {
   const sleeps = corosData.sleep || [];
   main.appendChild(el('div', 'header', '<div><h2>Recovery</h2><div class="breadcrumb">Recovery Analysis</div></div>'));
 
-  // Use API data if available
+  // Use API/data.json analysis data if available
   const score = analysisData && analysisData.recovery_score ? analysisData.recovery_score : null;
 
   const sect = el('div', 'section');
@@ -511,7 +528,7 @@ function renderWeekly(main) {
 
   main.appendChild(el('div', 'header', '<div><h2>Weekly Report</h2><div class="breadcrumb">Auto-generated Summary</div></div>'));
 
-  // Use weekly_narrative from API if available
+  // Use weekly_narrative from analysisData if available
   if (analysisData && analysisData.weekly_narrative) {
     const wn = analysisData.weekly_narrative;
     const sect = el('div', 'section');
