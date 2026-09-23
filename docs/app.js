@@ -422,18 +422,44 @@ function renderJournal(main) {
     '<button onclick="saveJournal()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:4px;cursor:pointer">Save Entry</button>';
   sect.appendChild(form);
   main.appendChild(sect);
+  document.getElementById('jDate').value = new Date().toISOString().split('T')[0];
 }
 
-function saveJournal() {
+async function saveJournal() {
   const entry = {
     date: document.getElementById('jDate').value,
     alcohol_units: parseInt(document.getElementById('jAlcohol').value) || 0,
-    caffeine_after_14: document.getElementById('jCaffeine').value === 'true',
-    late_meal: document.getElementById('jLateMeal').value === 'true',
+    caffeine_after_14: document.getElementById('jCaffeine').value === 'true' ? 1 : 0,
+    late_meal: document.getElementById('jLateMeal').value === 'true' ? 1 : 0,
     screen_before_bed_min: parseInt(document.getElementById('jScreen').value) || 0,
     stress_level: parseInt(document.getElementById('jStress').value) || 3
   };
-  alert('Journal entry saved for ' + entry.date);
+
+  if (!entry.date) {
+    alert('กรุณาเลือกวันที่ก่อนบันทึก');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/journal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: entry })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      alert('บันทึก Journal สำหรับวันที่ ' + entry.date + ' เรียบร้อย');
+      document.getElementById('jAlcohol').value = 0;
+      document.getElementById('jCaffeine').value = 'false';
+      document.getElementById('jLateMeal').value = 'false';
+      document.getElementById('jScreen').value = 0;
+      document.getElementById('jStress').value = 3;
+    } else {
+      alert('บันทึกไม่สำเร็จ: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('เชื่อมต่อ server ไม่ได้: ' + err.message + ' (ใช้งานได้เฉพาะตอนรัน local server ที่มี /api/journal)');
+  }
 }
 
 // ===== ACTIVITIES =====
