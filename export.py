@@ -90,7 +90,12 @@ def compute_full_analysis(sleep_for_analysis, daily_records, activities, journal
 
     # Recovery Score
     training_load_prev_day = strain_series[0].get("trimp", 0) if strain_series else 0
-    strain_3day = [s.get("trimp", 0) for s in strain_series[-3:] if s.get("trimp")] if strain_series else []
+    # BUGFIX: strain_series ที่รับเข้ามาเป็น DESC (ล่าสุดอยู่หัว list — ดู export()
+    # ด้านล่าง: strain_series = list(reversed(strain_ascending))) เหมือนกับที่
+    # app.py ใช้ แต่เดิมโค้ดตรงนี้ยัง [-3:] อยู่ (ดึง 3 ตัวท้าย = 3 วันเก่าที่สุด
+    # ใน 28 วัน ไม่ใช่ 3 วันล่าสุด) เป็นบั๊ก order ตัวเดียวกับที่เคยแก้ไปแล้วใน
+    # app.py (strain_3day) แต่ export.py ยังไม่ได้แก้ตาม
+    strain_3day = [s.get("trimp", 0) for s in strain_series[:3] if s.get("trimp")] if strain_series else []
 
     sleep_need = sleep_analysis.calculate_sleep_need(
         training_load=training_load_prev_day or 0,
@@ -344,11 +349,11 @@ def export():
     )  # strain_engine คืนค่าเรียงเก่า->ใหม่ (ดู docstring ของมันเอง)
 
     # compute_full_analysis() (ด้านล่าง) เขียนมาโดยอ้างอิง strain_series[0] เป็น
-    # "วันล่าสุด" (training_load_prev_day) และ strain_series[-3:] เป็น "3 วัน
+    # "วันล่าสุด" (training_load_prev_day) และ strain_series[:3] เป็น "3 วัน
     # ล่าสุด" — ตรงกับ convention เดียวกับ app.py ที่ strain_series มาจาก
     # coros_db.get_recent_daily_strain() ซึ่งเรียง DESC (ล่าสุดก่อน) ต้อง reverse
     # ให้ตรงกันก่อนส่งเข้าไป ไม่งั้นจะเอาวันที่เก่าที่สุดไปตีความเป็น "เมื่อวาน"
-    strain_series = list(reversed(strain_ascending))  # ล่าสุด -> เก่า
+    strain_series = list(reversed(strain_ascending))  # ล่าสุด -> เก่า (DESC)
     latest_strain = strain_series[0] if strain_series else None
 
     # Compute full analysis for narrative
@@ -365,7 +370,15 @@ def export():
         # app.js เช็ค analysisData.latest_strain / .daily_strain สำหรับ Strain
         # card บน dashboard — มาจาก strain ที่คำนวณสดด้านบน (ไม่ใช่จากตาราง
         # daily_strain ที่มักว่างเปล่าบน GitHub Pages ตามที่อธิบายไว้ข้างบน)
-        "daily_strain": list(reversed(strain_chronological)),  # ใหม่ -> เก่า เพื่อให้ [0] = ล่าสุด
+        #
+        # BUGFIX: เดิมบรรทัดนี้อ้างตัวแปร `strain_chronological` ซึ่งไม่เคยถูก
+        # ประกาศไว้ในไฟล์นี้เลย -> NameError ทุกครั้งที่รัน export() ทำให้
+        # สคริปต์ crash ก่อนจะเขียน data.json ได้ (ทั้งไฟล์เขียนไม่สำเร็จเลย
+        # ไม่ใช่แค่ field นี้หาย) และต่อให้แก้ชื่อตัวแปร การ reversed() ซ้ำอีก
+        # ครั้งบน strain_series ที่ถูก reverse เป็น DESC ไปแล้วด้านบน ก็จะพลิก
+        # กลับเป็น ASC (เก่าสุดก่อน) ขัดกับคอมเมนต์ "ใหม่ -> เก่า" ของตัวเอง —
+        # ใช้ strain_series ตรงๆ เลย ไม่ต้อง reverse ซ้ำ
+        "daily_strain": strain_series,  # DESC อยู่แล้ว: [0] = ล่าสุด
         "latest_strain": latest_strain,
         "stats": {
             "activities_count": len(acts_out),
