@@ -380,9 +380,13 @@ def generate_daily_narrative(
     h = int(duration // 60)
     m = int(duration % 60)
 
+    # BUGFIX: เดิมเขียนว่า f"นอน {h}ช {m}ผ่าน..." ซึ่งพิมพ์ตกคำ (ขาด "ม." "นาที"
+    # และมีคำ "ผ่าน" หลุดเข้ามาแบบไม่มีความหมาย) กลายเป็นข้อความอ่านไม่รู้เรื่อง
+    # เช่น "นอน 7ช 11ผ่าน Sleep Efficiency 85%" — แก้ให้อ่านออกและสอดคล้องกับ
+    # สไตล์ที่ใช้ใน _narrative_sleep() ("นอนทั้งหมด X ชั่วโมง Y นาที")
     summary = (
         f"วันนี้ Recovery {score:.0f}/100 ({band_text}) — "
-        f"นอน {h}ช {m}ผ่าน Sleep Efficiency {eff:.0f}%"
+        f"นอน {h} ชม {m} นาที — Sleep Efficiency {eff:.0f}%"
     )
 
     return {
@@ -410,6 +414,8 @@ def generate_weekly_digest(
         return {"overview": "ไม่มีข้อมูลเพียงพอสำหรับสร้างรายงาน"}
 
     # 7-day averages
+    # sleep_records เรียง ASC (เก่า -> ใหม่ ตามที่ app.py/export.py ส่งมา) ดังนั้น
+    # [-7:] / [-14:-7] ถูกต้องอยู่แล้วสำหรับ list นี้ — ไม่แตะจุดนี้
     last_7 = sleep_records[-7:]
     prev_7 = sleep_records[-14:-7] if len(sleep_records) >= 14 else []
 
@@ -436,8 +442,14 @@ def generate_weekly_digest(
     )
 
     # Strain trend
-    recent_strain = [s.get("day_strain", 0) for s in strain_series[-7:] if s.get("day_strain")]
-    prev_strain = [s.get("day_strain", 0) for s in strain_series[-14:-7] if s.get("day_strain")]
+    # BUGFIX: strain_series เรียง DESC (ล่าสุดอยู่หัว list — ยืนยันจาก
+    # coros_db.get_recent_daily_strain() ที่ app.py ใช้ และจาก
+    # list(reversed(strain_ascending)) ใน export.py) ต่างจาก sleep_records
+    # ที่เป็น ASC ด้านบน เดิมใช้ [-7:]/[-14:-7] แบบเดียวกันทั้งคู่ ทำให้ฝั่ง
+    # strain ดึง 7 วัน "เก่าที่สุด" มาคิดเป็น "สัปดาห์นี้" สลับกับ "สัปดาห์ก่อน"
+    # ผิดทาง แก้เป็น [:7] / [7:14] ให้ตรงทิศของ DESC
+    recent_strain = [s.get("day_strain", 0) for s in strain_series[:7] if s.get("day_strain")]
+    prev_strain = [s.get("day_strain", 0) for s in strain_series[7:14] if s.get("day_strain")]
     avg_strain = _avg(recent_strain) if recent_strain else 0
     prev_avg_strain = _avg(prev_strain) if prev_strain else 0
 
@@ -495,7 +507,7 @@ def generate_weekly_digest(
     if avg_strain > 14:
         next_week.append("ลด Training Load — โหลดสูงมาก")
     elif avg_strain < 5:
-        next_week.append("เพิ่ม Training Load เล็กน้อน — ซ้อมเบาเกินไป")
+        next_week.append("เพิ่ม Training Load เล็กน้อย — ซ้อมเบาเกินไป")
     if tsb < -15:
         next_week.append("deload week — TSB ต่ำมาก")
     elif tsb > 15:
