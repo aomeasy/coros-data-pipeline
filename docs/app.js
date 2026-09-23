@@ -1,4 +1,18 @@
+
+
 // ===== STATE =====
+const SPORT_TYPE_MAP = {
+  100: 'Outdoor Run',
+  101: 'Indoor Run',
+  102: 'Trail Run',
+  103: 'Track Run',
+  // เพิ่มตามโค้ดจริงที่เจอใน data — ต้องเช็ค COROS-MCP docs ให้ครบ
+};
+function sportLabel(code) {
+  return SPORT_TYPE_MAP[code] || ('Sport ' + code);
+}
+
+
 let corosData = { activities: [], sleep: [], daily: [], journals: [] };
 let analysisData = null;
 
@@ -247,6 +261,7 @@ function renderDashboard(main) {
   main.appendChild(el('div', 'header', '<div><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>'));
 
   // Narrative section (Phase 6) — บนสุด
+  renderRecoveryRing(main);
   renderNarrativeSection(main);
 
   // Cards
@@ -258,14 +273,7 @@ function renderDashboard(main) {
   cards.appendChild(card('Avg Stress', avgStress, ''));
   cards.appendChild(card('Activities', acts.length, 'total'));
 
-  // Add Recovery card if available
-  if (analysisData && analysisData.recovery_score) {
-    const rs = analysisData.recovery_score;
-    const bandColor = rs.band === 'green' ? '#10b981' : rs.band === 'yellow' ? '#f59e0b' : '#e94560';
-    const recCard = el('div', 'card');
-    recCard.innerHTML = '<div class="label">Recovery Score</div><div class="val" style="color:' + bandColor + '">' + (rs.recovery_score || '-') + '<span style="font-size:12px;color:var(--muted)"> /100</span></div>';
-    cards.appendChild(recCard);
-  }
+ 
 
   // Add Strain card if available
   if (analysisData && analysisData.latest_strain) {
@@ -304,7 +312,7 @@ function card(label, val, unit) {
 function renderActTable(acts) {
   const table = el('table');
   table.innerHTML = '<tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Pace</th><th>HR</th></tr><tbody>' +
-    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + a.sport_type + '</span></td><td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
+    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
     '</tbody>';
   const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table); return wrap;
 }
@@ -347,6 +355,25 @@ function renderSleep(main) {
   const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table);
   sect2.appendChild(wrap);
   main.appendChild(sect2);
+}
+
+function renderRecoveryRing(main) {
+  if (!analysisData || !analysisData.recovery_score) return;
+  const rs = analysisData.recovery_score;
+  const pct = rs.recovery_score || 0;
+  const bandClass = rs.band === 'green' ? 'status-green' : rs.band === 'yellow' ? 'status-yellow' : 'status-red';
+  const r = 78, circumference = 2 * Math.PI * r;
+  const offset = circumference - (pct / 100) * circumference;
+
+  const sect = el('div', 'section recovery-ring-section');
+  sect.innerHTML =
+    '<div class="ring-wrap"><svg width="180" height="180" viewBox="0 0 180 180">' +
+    '<circle class="ring-track" cx="90" cy="90" r="' + r + '"></circle>' +
+    '<circle class="ring-progress ' + bandClass + '" cx="90" cy="90" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
+    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
+    '<div class="ring-status-text ' + bandClass + '">' + rs.band.toUpperCase() + '</div>';
+  main.appendChild(sect);
 }
 
 // ===== RECOVERY =====
