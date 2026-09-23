@@ -28,10 +28,10 @@ async function loadData() {
 }
 
 // ===== NAV =====
-document.querySelectorAll('.nav a').forEach(a => {
+document.querySelectorAll('.tabbar a').forEach(a => {
   a.addEventListener('click', e => {
     e.preventDefault();
-    document.querySelectorAll('.nav a').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tabbar a').forEach(x => x.classList.remove('active'));
     a.classList.add('active');
     render(a.dataset.page);
   });
@@ -58,7 +58,7 @@ function renderNarrativeSection(main) {
 
   const narrative = analysisData.narrative;
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">📝">/span>สรุปภาพรวมวันนี้'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>สรุปภาพรวมวันนี้'));
 
   let html = '<div style="font-size:13.5px;line-height:1.7;color:var(--text)">';
 
@@ -102,7 +102,7 @@ function renderTrainingSection(main) {
 
   const ta = analysisData.training_analytics;
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">📊">/span>Training Analytics'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Training Analytics'));
 
   let html = '<div style="font-size:13px;line-height:1.7">';
 
@@ -174,7 +174,7 @@ function renderHealthRiskSection(main) {
   if (!hasRisk) return;
 
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">⚠️">/span>ความเสี่ยง'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">⚠️</span>ความเสี่ยง'));
 
   let html = '<div style="font-size:13px;line-height:1.7">';
 
@@ -218,7 +218,7 @@ function renderCoachSection(main) {
 
   const recs = analysisData.coach_recommendations;
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">💡">/span>คำแนะนำ'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">💡</span>คำแนะนำ'));
 
   let html = '<ul style="padding-left:20px;font-size:13px;line-height:1.8">';
   for (const rec of recs) {
@@ -288,7 +288,7 @@ function renderDashboard(main) {
 
   // Recent activities
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃">/span>Recent Activities'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Recent Activities'));
   if (acts.length === 0) {
     sect.appendChild(el('div', 'empty', '<div style="font-size:32px;margin-bottom:8px">🏃</div><p>No activities yet</p>'));
   } else {
@@ -332,14 +332,14 @@ function renderSleep(main) {
 
   // Stage balance
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">🌙">/span>Latest Night Stages'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🌙</span>Latest Night Stages'));
   sect.innerHTML += '<div class="stage-bar"><div class="stage-deep" style="width:' + deep + '%"></div><div class="stage-light" style="width:' + light + '%"></div><div class="stage-rem" style="width:' + rem + '%"></div><div class="stage-awake" style="width:' + awake + '%"></div></div>' +
     '<div class="legend"><span><span class="legend-dot" style="background:#7c3aed"></span>Deep ' + deep + '%</span><span><span class="legend-dot" style="background:#3b82f6"></span>Light ' + light + '%</span><span><span class="legend-dot" style="background:#f59e0b"></span>REM ' + rem + '%</span><span><span class="legend-dot" style="background:var(--accent)"></span>Awake ' + awake.toFixed(1) + '%</span></div>';
   main.appendChild(sect);
 
   // Sleep table
   const sect2 = el('div', 'section');
-  sect2.appendChild(el('h3', null, '<span class="sect-icon">📊">/span>Sleep History'));
+  sect2.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep History'));
   const table = el('table');
   table.innerHTML = '<tr><th>Date</th><th>Duration</th><th>Deep</th><th>Light</th><th>REM</th><th>Awake</th><th>Efficiency</th></tr><tbody>' +
     sleeps.map(s => { const eff = getEff(s); return '<tr><td>' + (s.date || '-') + '</td><td>' + fmtDuration((s.duration_min || 0) * 60) + '</td><td>' + (s.deep_sleep_pct || '-') + '%</td><td>' + (s.light_sleep_pct || '-') + '%</td><td>' + (s.rem_sleep_pct || '-') + '%</td><td>' + (s.awake_min || '-') + ' min</td><td>' + eff + '%</td></tr>'; }).join('') +
@@ -358,7 +358,7 @@ function renderRecovery(main) {
   const score = analysisData && analysisData.recovery_score ? analysisData.recovery_score : null;
 
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">❤️">/span>Recovery Score'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">❤️</span>Recovery Score'));
 
   if (score) {
     const bandColor = score.band === 'green' ? '#10b981' : score.band === 'yellow' ? '#f59e0b' : '#e94560';
@@ -398,7 +398,7 @@ function renderBreathing(main) {
   main.appendChild(el('div', 'header', '<div><h2>Breathing</h2><div class="breadcrumb">Respiratory Analysis</div></div>'));
 
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">🫁">/span>Breathing Metrics'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🫁</span>Breathing Metrics'));
   sect.innerHTML += '<div class="empty"><div style="font-size:32px;margin-bottom:8px">🫁</div><p>Connect COROS wellness check to see SpO2 and respiratory rate</p></div>';
   main.appendChild(sect);
 }
@@ -408,7 +408,7 @@ function renderJournal(main) {
   main.appendChild(el('div', 'header', '<div><h2>Journal</h2><div class="breadcrumb">Sleep Factors / Correlation</div></div>'));
 
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">📝">/span>Daily Journal'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>Daily Journal'));
 
   const form = el('div');
   form.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px">' +
@@ -442,7 +442,7 @@ function renderActivities(main) {
   main.appendChild(el('div', 'header', '<div><h2>Activities</h2><div class="breadcrumb">Training / Activities</div></div>'));
 
   const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃">/span>All Activities'));
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>All Activities'));
   if (acts.length === 0) {
     sect.appendChild(el('div', 'empty', '<p>No activities yet</p>'));
   } else {
@@ -462,7 +462,7 @@ function renderWeekly(main) {
   if (analysisData && analysisData.weekly_narrative) {
     const wn = analysisData.weekly_narrative;
     const sect = el('div', 'section');
-    sect.appendChild(el('h3', null, '<span class="sect-icon">📊">/span>สรุปสัปดาห์นี้'));
+    sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>สรุปสัปดาห์นี้'));
 
     let html = '<div style="font-size:13.5px;line-height:1.7">';
     if (wn.overview) html += '<p><strong>' + wn.overview + '</strong></p>';
@@ -492,7 +492,7 @@ function renderWeekly(main) {
     const totalSteps = daily.reduce((s, x) => s + (x.steps || 0), 0);
 
     const sect = el('div', 'section');
-    sect.appendChild(el('h3', null, '<span class="sect-icon">📊">/span>Sleep Summary'));
+    sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep Summary'));
     sect.innerHTML += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">' +
       '📊 สรุปการนอน (' + sleeps.length + ' คืน)\n' +
       '- Sleep Efficiency เฉลี่ย: ' + avgEff + '%\n' +
