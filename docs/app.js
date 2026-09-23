@@ -1,430 +1,643 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""COROS Data Pipeline — Flask Web UI"""
+// ===== STATE =====
+let corosData = { activities: [], sleep: [], daily: [], journals: [] };
+let analysisData = null;
 
-import os
-import json
-import sqlite3
-import subprocess
-import sys
-from datetime import datetime, timedelta
+// ===== SPORT TYPE MAPPING =====
+// เพิ่ม code ตามที่เจอจริงใน data — ต้องเช็ค COROS-MCP docs ให้ครบ
+// (ตอนนี้ยืนยันแล้วว่า 100 = Outdoor Run จากข้อมูลจริง โค้ดอื่นยังเป็นสมมติฐาน)
+const SPORT_TYPE_MAP = {
+  100: 'Outdoor Run',
+  101: 'Indoor Run',
+  102: 'Trail Run',
+  103: 'Track Run',
+};
+function sportLabel(code) {
+  return SPORT_TYPE_MAP[code] || ('Sport ' + code);
+}
 
-from flask import Flask, request, jsonify, send_from_directory, send_file
+// ===== HELPERS =====
+function fmtPace(s) { if (!s) return '-'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; }
+function fmtDuration(s) { if (!s) return '-'; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h > 0 ? h + 'h ' + m + 'm' : m + 'm'; }
+function fmtDist(m) { if (!m) return '-'; return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : m + ' m'; }
+function fmtDate(s) { if (!s) return '-'; return s.replace('T', ' ').substring(0, 16); }
+function fmtDateShort(s) { if (!s) return '-'; return s.substring(5, 10); }
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; }
+function fmtNum(n) { return n != null && !isNaN(n) ? (Number.isInteger(n) ? n : n.toFixed(1)) : '-'; }
+function statusClass(value, thresholds) {
+  // thresholds = {green: 90, yellow: 70} เช่น sleep efficiency >=90 เขียว, >=70 เหลือง, ต่ำกว่าแดง
+  if (value == null || isNaN(value)) return '';
+  if (value >= thresholds.green) return 'status-green';
+  if (value >= thresholds.yellow) return 'status-yellow';
+  return 'status-red';
+}
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SCRIPT_DIR, "coros_cache.db")
-DOCS_DIR = os.path.join(SCRIPT_DIR, "docs")
+// wrap known Thai severity parentheticals in the narrative text with colored spans
+// (ดี/ดีมาก/ปกติ/พอดี = green, พอใช้ = yellow, ต่ำ/สูง/ควรปรับปรุง/ยาวเกินไป = red)
+function colorizeNarrative(text) {
+  if (!text) return '';
+  const rules = [
+    [/\(ดีมาก\)/g, 'tag-good'],
+    [/\(ดี\)/g, 'tag-good'],
+    [/\(ปกติ\)/g, 'tag-good'],
+    [/\(พอใช้\)/g, 'tag-warn'],
+    [/\(ต่ำ\)/g, 'tag-bad'],
+    [/\(สูง\)/g, 'tag-bad'],
+    [/\(ควรปรับปรุง\)/g, 'tag-bad'],
+    [/\(ยาวเกินไป[^)]*\)/g, 'tag-bad'],
+  ];
+  let out = text;
+  for (const [re, cls] of rules) {
+    out = out.replace(re, m => '<span class="' + cls + '">' + m + '</span>');
+  }
+  return out;
+}
 
-# import DB layer
-sys.path.insert(0, SCRIPT_DIR)
-import coros_db
-import sleep_analysis
-import breath_analysis
-import strain_engine  # Phase 2.2
-import baseline_engine   # Phase 1 — EWMA + confidence band (เพิ่มใหม่)
-import training_analytics  # Phase 4
-import narrative_engine  # Phase 6 — Narrative engine
+// ===== DATA LOADING =====
+async function loadData() {
+  try {
+    const res = await fetch('./data.json?t=' + Date.now());
+    if (res.ok) corosData = await res.json();
+  } catch (e) { console.error('Load data.json failed:', e); }
 
-app = Flask(__name__, static_folder=DOCS_DIR, static_url_path="")
+  // export.py รวม analysis fields (recovery_score, narrative, training_analytics ฯลฯ)
+  // ไว้ที่ top level ของ data.json ตัวเดียวกันอยู่แล้ว — ใช้เป็นค่าเริ่มต้นก่อน
+  // เพื่อให้ทำงานได้บน GitHub Pages (static host ไม่มี /api/* endpoint จริง)
+  analysisData = corosData;
 
+  // ถ้ารัน local server (app.py) อยู่ /api/analysis จะให้ข้อมูลสดกว่า data.json
+  // ที่ export ไว้ตอนเช้า — ลองเรียกทับ ถ้าเรียกไม่ได้ (เช่นบน GitHub Pages) ก็ไม่เป็นไร
+  try {
+    const analysisRes = await fetch('/api/analysis');
+    if (analysisRes.ok) analysisData = await analysisRes.json();
+  } catch (e) { console.log('Local /api/analysis not available — using data.json analysis fields'); }
 
-def get_db():
-    conn = coros_db.get_conn()
-    conn.row_factory = sqlite3.Row
-    return conn
+  render('dashboard');
+}
 
+// ===== NAV =====
+document.querySelectorAll('.tabbar a').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    document.querySelectorAll('.tabbar a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    render(a.dataset.page);
+  });
+});
 
-@app.route("/")
-def index():
-    return send_file(os.path.join(DOCS_DIR, "index.html")) 
+// ===== RENDER =====
+function render(page) {
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+  switch(page) {
+    case 'dashboard': renderDashboard(main); break;
+    case 'sleep': renderSleep(main); break;
+    case 'recovery': renderRecovery(main); break;
+    case 'breathing': renderBreathing(main); break;
+    case 'journal': renderJournal(main); break;
+    case 'activities': renderActivities(main); break;
+    case 'weekly': renderWeekly(main); break;
+  }
+}
 
-@app.route("/api/data")
-def api_data():
-    """Serve docs/data.json"""
-    data_path = os.path.join(DOCS_DIR, "data.json")
-    if os.path.exists(data_path):
-        return send_file(data_path)
-    return jsonify({"error": "data.json not found"}), 404
+// ===== MINI RING (shared by Sleep/Strain rings) =====
+// value/max null-safe: pass value=null to render an "empty" placeholder ring (no data)
+function miniRing(label, value, max, decimals) {
+  const r = 36, circumference = 2 * Math.PI * r;
+  const hasData = value != null && !isNaN(value);
+  const pct = hasData ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const offset = circumference - (pct / 100) * circumference;
+  const cls = hasData ? statusClass(pct, {green:80, yellow:50}) : 'status-empty';
+  const item = el('div', 'mini-ring-item');
+  item.innerHTML =
+    '<div class="mini-ring-wrap"><svg width="92" height="92" viewBox="0 0 92 92">' +
+    '<circle class="mini-ring-track" cx="46" cy="46" r="' + r + '"></circle>' +
+    '<circle class="mini-ring-progress ' + cls + '" cx="46" cy="46" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
+    '</svg><div class="mini-ring-center"><div class="pct">' + (hasData ? Number(value).toFixed(decimals || 0) : '–') + '</div></div></div>' +
+    '<div class="lbl">' + label + '</div>';
+  return item;
+}
 
+// ===== RECOVERY RING (Whoop-style, ใช้ analysisData.recovery_score) =====
+// รวม Sleep Performance + Strain เป็น mini-ring คู่กัน (3-ring layout แบบ Whoop)
+function renderRecoveryRing(main) {
+  if (!analysisData || !analysisData.recovery_score) return;
+  const rs = analysisData.recovery_score;
+  const pct = rs.recovery_score;
+  if (pct == null || isNaN(pct)) return;
 
-def _compute_and_store_strain(activities, sleep_records, days=28):
-    """
-    Phase 2.2 — เรียก strain_engine กับ activities + sleep_records แล้วเก็บผลลง daily_strain
+  const bandClass = rs.band === 'green' ? 'status-green' : rs.band === 'yellow' ? 'status-yellow' : 'status-red';
+  const r = 78, circumference = 2 * Math.PI * r;
+  const clamped = Math.max(0, Math.min(100, pct));
+  const offset = circumference - (clamped / 100) * circumference;
 
-    BUGFIX (เดิมโค้ดนี้พังเงียบมาตลอด — /api/analysis เคย return daily_strain
-    เป็น [] และ latest_strain เป็น None ทุกครั้ง โดยไม่มี error โผล่ให้เห็นเลย):
+  const sect = el('div', 'section recovery-ring-section');
+  sect.innerHTML =
+    '<div class="ring-wrap"><svg width="180" height="180" viewBox="0 0 180 180">' +
+    '<circle class="ring-track" cx="90" cy="90" r="' + r + '"></circle>' +
+    '<circle class="ring-progress ' + bandClass + '" cx="90" cy="90" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
+    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
+    '<div class="ring-status-text ' + bandClass + '">' + String(rs.band || '').toUpperCase() + '</div>';
 
-    1. ชื่อฟังก์ชันผิด: เดิมเรียก strain_engine.compute_daily_strain(activities)
-       แต่ฟังก์ชันจริงใน strain_engine.py ชื่อ compute_strain_for_all_days(...)
-       และต้องการ sleep_records ด้วย (ใช้หา HR rest) -> AttributeError ทุกครั้ง
-       แล้วถูก except AttributeError: return [] กลืนเงียบไปเลย
-    2. ชื่อ field ไม่ตรงกัน: strain_engine คืนค่า key "strain" ไม่ใช่ "day_strain"
-       ที่ coros_db.store_daily_strain() อ่าน -> ต่อให้เรียกฟังก์ชันถูก ก็จะได้
-       day_strain = NULL ในตารางทุกแถวอยู่ดี
-    3. "acwr" ที่ strain_engine คืนมาเป็น dict ทั้งก้อน (acwr/acute_avg/chronic_avg/
-       confidence/risk) ไม่ใช่ตัวเลขเดียว -- ถ้าเอาไปยัด column REAL ตรงๆ sqlite3
-       จะโยน InterfaceError (unsupported type) ทันที ต้องแกะ ["acwr"] ออกมาก่อน
-    """
-    try:
-        strain_results = strain_engine.compute_strain_for_all_days(activities, sleep_records)
-    except Exception as e:
-        # ยังกันไม่ให้ /api/analysis ทั้งตัวล่มถ้า strain engine มีปัญหา
-        # แต่ log ไว้จริงแทนการกลืนเงียบแบบเดิม เพื่อให้เห็นตอน debug
-        app.logger.warning("strain_engine.compute_strain_for_all_days failed: %s", e)
-        return coros_db.get_recent_daily_strain(days=days)
+  // Sleep Performance mini-ring (already computed backend-side in recovery_score.components)
+  const sleepPerf = rs.components ? rs.components.sleep_performance : null;
+  // Strain mini-ring — latest_strain is currently missing from data.json (backend export gap),
+  // so this correctly falls back to an empty "no data" ring instead of showing a fake number
+  const strain = analysisData.latest_strain ? analysisData.latest_strain.day_strain : null;
 
-    for s in strain_results:
-        if not s.get("date"):
-            continue
-        acwr_result = s.get("acwr") or {}
-        coros_db.store_daily_strain({
-            "date": s["date"],
-            "day_strain": s.get("strain"),
-            "trimp": s.get("trimp"),
-            "acwr": acwr_result.get("acwr"),
-            "acwr_risk": acwr_result.get("risk"),
-            "acwr_confidence": acwr_result.get("confidence"),
-        })
+  const row = el('div', 'triple-ring-row');
+  row.appendChild(miniRing('Sleep Perf', sleepPerf, 100, 0));
+  row.appendChild(miniRing('Strain /21', strain, 21, 1));
+  sect.appendChild(row);
 
-    return coros_db.get_recent_daily_strain(days=days)
+  main.appendChild(sect);
+}
 
+// ===== NARRATIVE SECTION =====
+function renderNarrativeSection(main) {
+  if (!analysisData || !analysisData.narrative) return;
 
-@app.route("/api/analysis")
-def api_analysis():
-    """Run sleep_analysis + breath_analysis + strain_engine, return JSON"""
-    conn = get_db()
-    sleep_records = [dict(r) for r in conn.execute(
-        "SELECT * FROM sleep_data ORDER BY date ASC"
-    ).fetchall()]
-    daily_records = [dict(r) for r in conn.execute(
-        "SELECT * FROM daily_health ORDER BY date ASC"
-    ).fetchall()]
-    # FIX: ของเดิม LIMIT 20 กิจกรรม อาจไม่พอสำหรับ ACWR ซึ่งต้องมองย้อน 28 วัน
-    # (ถ้าออกกำลังกายบ่อยกว่า 20 ครั้ง/28 วัน ค่า chronic average จะเพี้ยนเพราะข้อมูลหาย)
-    activities = [dict(r) for r in conn.execute(
-        "SELECT * FROM activities WHERE start_time >= date('now', '-35 days') "
-        "ORDER BY start_time DESC"
-    ).fetchall()]
-    journals = [dict(r) for r in conn.execute(
-        "SELECT * FROM journal_entries ORDER BY date ASC"
-    ).fetchall()]
-    conn.close()
+  const narrative = analysisData.narrative;
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>สรุปภาพรวมวันนี้'));
 
-    # Normalize sleep records for analysis
-    sleep_for_analysis = []
-    for s in sleep_records:
-        rec = {
-            "date": s.get("date", ""),
-            "duration_min": s.get("duration_min", 0),
-            "total_sleep_min": s.get("duration_min", 0),
-            "time_in_bed_min": s.get("duration_min", 0) + int((s.get("awake_min", 0) or 0) * 1.5),
-            "deep_sleep_pct": s.get("deep_sleep_pct"),
-            "light_sleep_pct": s.get("light_sleep_pct"),
-            "rem_sleep_pct": s.get("rem_sleep_pct"),
-            "awake_min": s.get("awake_min", 0),
-            "hrv": s.get("hrv"),
-            "resting_hr": s.get("resting_hr"),
-            "sleep_score": s.get("sleep_score"),
-        }
-        sleep_for_analysis.append(rec)
+  let html = '<div style="font-size:13.5px;line-height:1.7;color:var(--text)">';
 
-    # Sleep analysis
-    sleep_metrics = []
-    for rec in sleep_for_analysis:
-        eff = sleep_analysis.sleep_efficiency(rec)
-        stages = sleep_analysis.stage_percentages(rec)
+  // Summary
+  if (narrative.summary) {
+    html += '<p style="font-weight:600;margin-bottom:12px;font-size:14px">' + colorizeNarrative(narrative.summary) + '</p>';
+  }
 
-        # BUGFIX: eff เดิมคำนวณแล้วใส่ไว้แค่ใน sleep_metrics (สำหรับตาราง Sleep History)
-        # แต่ไม่เคยใส่กลับเข้า `rec` (sleep_for_analysis) เลย ทั้งที่ sleep_for_analysis
-        # คือตัวที่ถูกส่งต่อไปยัง narrative_engine.generate_weekly_digest() เป็น
-        # sleep_records — ฟังก์ชันนั้นอ่านหา key "efficiency"/"sleep_efficiency" ซึ่งไม่มีอยู่
-        # เลยได้ default 0 เสมอ -> weekly_narrative.sleep_trends.efficiency_avg = 0.0%
-        # ทั้งที่ Sleep Efficiency จริงอยู่ราว 80-95% ทุกคืน
-        rec["efficiency"] = eff
-        rec["sleep_efficiency"] = eff
+  // Sections
+  const sections = narrative.sections || {};
+  const sectionLabels = {
+    recovery: '❤️ Recovery',
+    sleep: '😴 การนอน',
+    training: '🏋️ การซ้อม',
+    health: '⚠️ สุขภาพ',
+  };
 
-        sleep_metrics.append({
-            "date": rec["date"],
-            "efficiency": eff,
-            "duration_min": rec["duration_min"],
-            "deep_pct": rec.get("deep_sleep_pct"),
-            "light_pct": rec.get("light_sleep_pct"),
-            "rem_pct": rec.get("rem_sleep_pct"),
-            "awake_min": rec.get("awake_min"),
-            "hrv": rec.get("hrv"),
-            "resting_hr": rec.get("resting_hr"),
-            "stages": stages,
-        })
-
-    # Baselines
-    baseline_deep = baseline_engine.compute_baseline_v2(
-        sleep_for_analysis, ["deep_sleep_pct"], metric_name="deep")
-    baseline_rem = baseline_engine.compute_baseline_v2(
-        sleep_for_analysis, ["rem_sleep_pct"], metric_name="rem")
-    baseline_hrv = baseline_engine.compute_baseline_v2(
-        sleep_for_analysis, ["hrv"], metric_name="hrv_ln_rmssd", log_transform=True)
-    baseline_rhr = baseline_engine.compute_baseline_v2(
-        sleep_for_analysis, ["resting_hr"], metric_name="resting_hr")
-    baseline_resp_rate = baseline_engine.compute_baseline_v2(
-        daily_records, ["respiratory_rate"], metric_name="resp_rate")
-
-    # ---------------------------------------------------------------
-    # Phase 2.2 — Strain Engine: คำนวณจาก activities แล้วเก็บ + ดึงกลับ
-    # ---------------------------------------------------------------
-    strain_series = _compute_and_store_strain(activities, sleep_for_analysis, days=28)
-    latest_strain = strain_series[0] if strain_series else None  # ORDER BY date DESC
-
-    # ---------------------------------------------------------------
-    # Recovery Score — แก้ให้ sleep_performance_pct เป็นค่าจริง (ของเดิม hardcode
-    # ไว้ที่ 85 เสมอ) + ผูก training_load จาก strain (โหลดเมื่อวานกระทบ need วันนี้)
-    # + pass resp_rate_z / spo2_flag / skin_temp_flag ที่ของเดิมไม่เคยส่งเข้า
-    # recovery_score() เลยทั้งที่ฟังก์ชันรับพารามิเตอร์นี้อยู่แล้ว
-    # ---------------------------------------------------------------
-    latest = sleep_for_analysis[-1] if sleep_for_analysis else {}
-    latest_daily = daily_records[-1] if daily_records else {}
-
-    training_load_prev_day = latest_strain.get("trimp") if latest_strain else 0
-
-    # Strain 3 วัน (สำหรับ sleep need)
-    strain_3day = []
-    if strain_series:
-        for s in strain_series[:3]:   # DESC order → 3 ตัวแรก = 3 วันล่าสุด
-            if s.get("trimp"):
-                strain_3day.append(s["trimp"])
-
-    sleep_need = sleep_analysis.calculate_sleep_need(
-        training_load=training_load_prev_day or 0,
-        strain_3day=strain_3day if len(strain_3day) >= 2 else None,
-    )
-    
-    sp_pct = sleep_analysis.sleep_performance(
-        actual_min=latest.get("duration_min", 0) or 0,
-        need_min=sleep_need["sleep_need_min"],
-    )
-
-    resp_rate_z = sleep_analysis.z_score(
-        latest_daily.get("respiratory_rate"), baseline_resp_rate
-    ) or 0
-
-    skin_temp_analysis = sleep_analysis.analyze_skin_temp(daily_records, window=7)
-    skin_temp_flag = skin_temp_analysis.get("flag", "normal")
-
-    spo2_analysis = sleep_analysis.analyze_spo2({
-        "spo2_avg": latest_daily.get("spo2_avg"),
-        "spo2_min": latest_daily.get("spo2_min"),
-    })
-    spo2_flag = sleep_analysis.flag_spo2_risk(spo2_analysis)
-
-    hrv_today_ln = baseline_engine.ln_rmssd(latest.get("hrv"))
-
-    # Training load ส่งเข้า recovery_score โดยตรง — ก่อนที่ HRV จะเปลี่ยน
- 
-
-    # Respiratory rate trend (7-day slope)
-    recent_rr = [d.get("respiratory_rate") for d in daily_records[-7:] if d.get("respiratory_rate")]
-    resp_rate_trend = 0.0
-    if len(recent_rr) >= 5:
-        resp_rate_trend = round((recent_rr[-1] - recent_rr[0]) / len(recent_rr), 3)
-
-    rec_score = sleep_analysis.recovery_score(
-        hrv_today=hrv_today_ln,       
-        hrv_baseline=baseline_hrv,
-        rhr_today=latest.get("resting_hr"),
-        rhr_baseline=baseline_rhr,
-        sleep_performance_pct=sp_pct,
-        sleep_efficiency_pct=latest.get("duration_min", 0) / max(latest.get("time_in_bed_min", 1), 1) * 100 if latest else 80,
-        spo2_flag=spo2_flag,
-        skin_temp_flag=skin_temp_flag,
-        resp_rate_z=resp_rate_z,
-        training_load=training_load_prev_day or 0,
-        resp_rate_trend=resp_rate_trend,       # ← เพิ่ม
-    )
-
-    # SQI
-    sqi = sleep_analysis.calculate_sqi(sleep_for_analysis)
-
-    # Weekly report
-    weekly_report = sleep_analysis.generate_weekly_report(sleep_for_analysis, journals)
-
-    # Journal correlation
-    journal_correlations = []
-    if journals and len(journals) >= 3:
-        try:
-            journal_correlations = sleep_analysis.rank_journal_impacts(
-                sleep_for_analysis, journals, sleep_analysis.sleep_efficiency
-            )
-        except Exception:
-            pass
-
-    # Breath analysis (from daily health)
-    breath_metrics = []
-    for d in daily_records:
-        rr = d.get("respiratory_rate")
-        spo2 = d.get("spo2_avg")
-        hrv = d.get("avg_hr")
-        breath_metrics.append({
-            "date": d.get("date", ""),
-            "respiratory_rate": breath_analysis.analyze_respiratory_rate(rr),
-            "spo2": breath_analysis.analyze_spo2(spo2, d.get("spo2_min")),
-        })
-
-    # Breathing efficiency (latest)
-    breath_eff = breath_analysis.breathing_efficiency_score(
-        rr=latest_daily.get("respiratory_rate"),
-        spo2=latest_daily.get("spo2_avg"),
-        hrv=latest_daily.get("avg_hr"),
-        hrv_baseline=baseline_hrv.get("mean") if baseline_hrv.get("mean") else None,
-    )
-
-    # Anomaly detection
-    baselines_dict = {
-        "deep": baseline_deep,
-        "rem": baseline_rem,
-        "hrv_ms": baseline_hrv,
-        "resting_hr": baseline_rhr,
+  for (const [key, label] of Object.entries(sectionLabels)) {
+    if (sections[key]) {
+      html += '<div style="margin-top:10px"><strong style="color:var(--accent)">' + label + '</strong><br>' + colorizeNarrative(sections[key]) + '</div>';
     }
-    
-    anomalies = []
-    if sleep_for_analysis:
-        anomalies = sleep_analysis.detect_anomalies(sleep_for_analysis[-1], baselines_dict)
+  }
 
-    # Sleep Coach Recommendations
-    coach_recommendations = []
-    if sleep_for_analysis:
-        coach_recommendations = sleep_analysis.generate_sleep_coach_recommendations(
-            sleep_for_analysis, journals=journals, anomalies=anomalies
-        )
-
-    # Bedtime consistency
-    consistency = sleep_analysis.bedtime_consistency(sleep_for_analysis)
-
-    # Phase 5 — Illness & Overtraining Detection
-    illness_baselines = {
-        "resting_hr": baseline_rhr,
-        "hrv_ms": baseline_hrv,
-        "respiratory_rate": baseline_resp_rate,
+  // Action items
+  if (narrative.action_items && narrative.action_items.length > 0) {
+    html += '<div style="margin-top:14px"><strong style="color:var(--success)">💡 คำแนะนำ</strong><ul style="margin-top:6px;padding-left:20px">';
+    for (const item of narrative.action_items) {
+      html += '<li style="margin-bottom:3px">' + colorizeNarrative(item) + '</li>';
     }
-    illness_risk = sleep_analysis.compute_illness_risk(latest, illness_baselines)
+    html += '</ul></div>';
+  }
 
-    # Phase 4 — Training Analytics (rec_val needed for both overtraining and training)
-    rec_val = rec_score.get("recovery_score", 50) if isinstance(rec_score, dict) else 50
+  html += '</div>';
+  sect.innerHTML += html;
+  main.appendChild(sect);
+}
 
-    # Overtraining detection
-    recovery_scores_list = [{"recovery_score": rec_val}]
-    overtraining = sleep_analysis.detect_overtraining(strain_series, recovery_scores_list, sleep_for_analysis)
+// ===== TRAINING ANALYTICS SECTION =====
+function renderTrainingSection(main) {
+  if (!analysisData || !analysisData.training_analytics) return;
 
-    # Rolling averages
-    eff_trend = sleep_analysis.rolling_average(
-        sleep_for_analysis, sleep_analysis.sleep_efficiency, window=7
-    )
+  const ta = analysisData.training_analytics;
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Training Analytics'));
 
-    training_analytics_result = training_analytics.compute_training_analytics(
-        activities, strain_series, sleep_for_analysis,
-        recovery_score=rec_val, ctl_baseline=150
-    )
+  let html = '<div style="font-size:13px;line-height:1.7">';
 
-    # Phase 6 — Narrative Generation
-    narrative = narrative_engine.generate_daily_narrative(
-        recovery=rec_score,
-        sleep=latest,
-        strain_series=strain_series,
-        training_analytics=training_analytics_result,
-        illness=illness_risk,
-        overtraining=overtraining,
-        consistency=consistency,
-    )
+  // CTL/ATL/TSB
+  if (ta.fitness) {
+    const f = ta.fitness;
+    html += '<p><strong>Fitness / Fatigue / Form:</strong><br>';
+    html += 'CTL (Fitness): ' + fmtNum(f.ctl) + ' | ATL (Fatigue): ' + fmtNum(f.atl) + ' | TSB (Form): ' + (f.tsb != null ? (f.tsb >= 0 ? '+' : '') + fmtNum(f.tsb) : '-') + '<br>';
+    html += 'สถานะ: ' + (f.confidence === 'stable' ? 'ข้อมูลเพียงพอ' : f.confidence === 'moderate' ? 'กำลังสะสม' : 'ข้อมูลไม่พอ');
+    html += '</p>';
+  }
 
-    weekly_narrative = narrative_engine.generate_weekly_digest(
-        sleep_records=sleep_for_analysis,
-        strain_series=strain_series,
-        training_analytics=training_analytics_result,
-        journal_correlations=journal_correlations,
-    )
+  // Economy
+  if (ta.economy && ta.economy.trend) {
+    const econ = ta.economy;
+    html += '<p><strong>Running Economy:</strong><br>';
+    if (econ.trend === 'improving') {
+      html += '✅ ดีขึ้น ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% — วิ่งเร็วขึ้นที่ HR เดียวกัน';
+    } else if (econ.trend === 'declining') {
+      html += '⚠️ แย่ลง ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% — อาจยังไม่ฟื้น';
+    } else {
+      html += 'คงที่';
+    }
+    html += '</p>';
+  }
 
-    return jsonify({
-        "sleep_metrics": sleep_metrics,
-        "baselines": {
-            "deep": baseline_deep,
-            "rem": baseline_rem,
-            "hrv": baseline_hrv,
-            "resting_hr": baseline_rhr,
-            "respiratory_rate": baseline_resp_rate,
-        },
-        "recovery_score": rec_score,
-        "daily_strain": strain_series,          # Phase 2.2 — คู่กับ recovery_score
-        "latest_strain": latest_strain,         # ให้ frontend โชว์ ring คู่ได้ง่ายๆ
-        "sqi": sqi,
-        "weekly_report": weekly_report,
-        "journal_correlations": journal_correlations,
-        "breath_metrics": breath_metrics,
-        "breathing_efficiency": breath_eff,
-        "anomalies": anomalies,
-        "coach_recommendations": coach_recommendations,
-        "bedtime_consistency": consistency,
-        "illness_risk": illness_risk,
-        "overtraining": overtraining,
-        "efficiency_trend": eff_trend,
-        "activities": activities,
-        "daily_health": daily_records,
-        "training_analytics": training_analytics_result,
-        "narrative": narrative,
-        "weekly_narrative": weekly_narrative,
-    })
+  // Race Readiness
+  if (ta.readiness && ta.readiness.readiness_score != null) {
+    const r = ta.readiness;
+    html += '<p><strong>Race Readiness Score:</strong><br>';
+    html += 'คะแนน: ' + fmtNum(r.readiness_score) + '/100 — ';
+    if (r.band === 'ready') {
+      html += '<span style="color:var(--success);font-weight:600">พร้อมแข่ง</span>';
+    } else if (r.band === 'moderate') {
+      html += '<span style="color:var(--warning);font-weight:600">พอใช้</span>';
+    } else {
+      html += '<span style="color:var(--accent);font-weight:600">ยังไม่พร้อม</span>';
+    }
+    html += '</p>';
+  }
 
+  // Strain-Performance
+  if (ta.strain_performance && ta.strain_performance.lag_days != null) {
+    const sp = ta.strain_performance;
+    html += '<p><strong>Strain → Performance:</strong><br>';
+    html += 'Lag: ' + sp.lag_days + ' วัน (ซ้อมหนักแล้ว performance ลดลง ' + sp.lag_days + ' วันต่อมา)';
+    if (sp.correlation) {
+      html += ' | correlation: ' + sp.correlation;
+    }
+    html += '</p>';
+  }
 
-@app.route("/api/journal", methods=["GET"])
-def api_journal_get():
-    """Get all journal entries"""
-    journals = coros_db.get_all_journals()
-    return jsonify({"journals": journals})
+  html += '</div>';
+  sect.innerHTML += html;
+  main.appendChild(sect);
+}
 
+// ===== ILLNESS / OVERTRAINING SECTION =====
+function renderHealthRiskSection(main) {
+  if (!analysisData) return;
 
-@app.route("/api/journal", methods=["POST"])
-def api_journal_post():
-    """Save journal entry"""
-    data = request.get_json(force=True)
-    if not data.get("data"):
-        return jsonify({"error": "missing 'data' field"}), 400
+  const illness = analysisData.illness_risk;
+  const overtraining = analysisData.overtraining;
+  if (!illness && !overtraining) return;
 
-    entry = data["data"]
-    if not entry.get("date"):
-        entry["date"] = datetime.now().strftime("%Y-%m-%d")
+  const hasRisk = (illness && illness.risk_level && illness.risk_level !== 'none') ||
+                  (overtraining && overtraining.risk_level && overtraining.risk_level !== 'none');
 
-    # Convert boolean fields to int
-    bool_fields = ["caffeine_after_14", "late_meal", "exercise_evening", "room_temp_hot"]
-    for f in bool_fields:
-        if f in entry:
-            entry[f] = 1 if entry[f] else 0
+  if (!hasRisk) return;
 
-    coros_db.store_journal(entry)
-    return jsonify({"ok": True, "date": entry["date"]})
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">⚠️</span>ความเสี่ยง'));
 
+  let html = '<div style="font-size:13px;line-height:1.7">';
 
-@app.route("/api/sync", methods=["POST"])
-def api_sync():
-    """Trigger coros_daily_sync"""
-    env = os.environ.copy()
-    env["COROS_EMAIL"] = os.environ.get("COROS_EMAIL", "")
-    env["COROS_PASSWORD"] = os.environ.get("COROS_PASSWORD", "")
+  if (illness && illness.risk_level && illness.risk_level !== 'none') {
+    const levelColor = illness.risk_level === 'high' ? 'var(--accent)' : 'var(--warning)';
+    html += '<p><strong>ความเสี่ยงป่วย: <span style="color:' + levelColor + '">' + illness.risk_score + '/4 (' + illness.risk_level + ')</span></strong>';
+    if (illness.signals && illness.signals.length > 0) {
+      const signalLabels = {
+        rhr_high: 'RHR สูงผิดปกติ',
+        hrv_low: 'HRV ต่ำผิดปกติ',
+        skin_temp_high: 'Skin Temp สูงผิดปกติ',
+        resp_rate_high: 'Respiratory Rate สูงผิดปกติ'
+      };
+      html += '<br>สัญญาณ: ' + illness.signals.map(s => signalLabels[s] || s).join(', ');
+    }
+    html += '</p>';
+  }
 
-    result = subprocess.run(
-        [sys.executable, os.path.join(SCRIPT_DIR, "coros_daily_sync.py")],
-        capture_output=True, text=True, env=env,
-    )
-    return jsonify({
-        "ok": result.returncode == 0,
-        "stdout": result.stdout[-2000:] if result.stdout else "",
-        "stderr": result.stderr[-1000:] if result.stderr else "",
-    })
+  if (overtraining && overtraining.risk_level && overtraining.risk_level !== 'none') {
+    const levelColor = overtraining.risk_level === 'high' ? 'var(--accent)' : overtraining.risk_level === 'medium' ? 'var(--warning)' : 'var(--info)';
+    html += '<p><strong>ความเสี่ยง Overtraining: <span style="color:' + levelColor + '">' + overtraining.risk_level + '</span></strong>';
+    if (overtraining.flags && overtraining.flags.length > 0) {
+      const flagLabels = {
+        acwr_high: 'ACWR สูงต่อเนื่อง',
+        hrv_declining: 'HRV แนวโน้มลด',
+        recovery_low: 'Recovery ต่ำติดต่อกัน'
+      };
+      html += '<br>สัญญาณ: ' + overtraining.flags.map(f => flagLabels[f] || f).join(', ');
+    }
+    html += '</p>';
+  }
 
+  html += '</div>';
+  sect.innerHTML += html;
+  main.appendChild(sect);
+}
 
-@app.route("/api/stats")
-def api_stats():
-    """DB stats"""
-    return jsonify(coros_db.get_db_stats())
+// ===== COACH RECOMMENDATIONS =====
+function renderCoachSection(main) {
+  if (!analysisData || !analysisData.coach_recommendations || analysisData.coach_recommendations.length === 0) return;
 
+  const recs = analysisData.coach_recommendations;
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">💡</span>คำแนะนำ'));
 
-if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    print(f"COROS Health Dashboard → http://localhost:{port}")
-    app.run(host="0.0.0.0", port=port, debug=False)
+  let html = '<ul style="padding-left:20px;font-size:13px;line-height:1.8">';
+  for (const rec of recs) {
+    const priorityColor = rec.priority === 'high' ? 'var(--accent)' : rec.priority === 'medium' ? 'var(--warning)' : 'var(--info)';
+    html += '<li style="margin-bottom:6px"><span style="color:' + priorityColor + ';font-size:10px;text-transform:uppercase;font-weight:600">[' + rec.priority + ']</span> ' + rec.message + '</li>';
+  }
+  html += '</ul>';
+  sect.innerHTML += html;
+  main.appendChild(sect);
+}
+
+// ===== TODAY'S ACTIVITY (merged card — replaces the old loose Total Distance / Avg Pace tiles) =====
+function renderActivityCard(main, acts) {
+  if (!acts || acts.length === 0) return;
+  const sorted = [...acts].sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+  const latest = sorted[0];
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Latest Activity'));
+
+  const card = el('div', 'activity-card');
+  card.innerHTML =
+    '<div class="a-head"><span class="a-sport">' + sportLabel(latest.sport_type) + '</span><span class="a-date">' + fmtDate(latest.start_time) + '</span></div>' +
+    '<div class="activity-stats">' +
+      '<div class="a-stat"><div class="a-val">' + fmtDist(latest.distance_m) + '</div><div class="a-lbl">Distance</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + fmtDuration(latest.duration_s) + '</div><div class="a-lbl">Duration</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + fmtPace(latest.avg_pace_s) + '</div><div class="a-lbl">Pace /km</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + (latest.avg_hr || '-') + '</div><div class="a-lbl">Avg HR</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + (latest.calories_burned || '-') + '</div><div class="a-lbl">Calories</div></div>' +
+    '</div>';
+  sect.appendChild(card);
+  main.appendChild(sect);
+}
+
+// ===== DASHBOARD =====
+function renderDashboard(main) {
+  const acts = corosData.activities || [];
+  const sleeps = corosData.sleep || [];
+  const daily = corosData.daily || [];
+
+  const totalSteps = daily.reduce((s, x) => s + (x.steps || 0), 0);
+  const avgStress = daily.length ? Math.round(daily.reduce((s, x) => s + (x.stress_score || 0), 0) / daily.length) : 0;
+  const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
+
+  // Header
+  main.appendChild(el('div', 'header', '<div><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>'));
+
+  // Recovery + Sleep Perf + Strain — Whoop-style 3-ring, บนสุดของ dashboard
+  renderRecoveryRing(main);
+
+  // Narrative section (Phase 6)
+  renderNarrativeSection(main);
+
+  // Latest Activity — merged distance/pace/duration/HR into one contextual card
+  renderActivityCard(main, acts);
+
+  // Remaining summary cards (distance/pace removed — now live in the Activity card above)
+  const cards = el('div', 'cards');
+  cards.appendChild(card('Total Steps', totalSteps.toLocaleString(), ''));
+  cards.appendChild(card('Sleep Efficiency', avgEff + '%', 'average', statusClass(avgEff, {green:90, yellow:70})));
+  cards.appendChild(card('Avg Stress', avgStress, '', statusClass(100 - avgStress, {green:70, yellow:50}))); // stress: ยิ่งต่ำยิ่งดี เลยกลับค่าก่อนเทียบ threshold
+  cards.appendChild(card('Activities', acts.length, 'total'));
+  main.appendChild(cards);
+
+  // Training Analytics section
+  renderTrainingSection(main);
+
+  // Health Risk section
+  renderHealthRiskSection(main);
+
+  // Coach Recommendations
+  renderCoachSection(main);
+
+  // Recent activities
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Recent Activities'));
+  if (acts.length === 0) {
+    sect.appendChild(el('div', 'empty', '<div style="font-size:32px;margin-bottom:8px">🏃</div><p>No activities yet</p>'));
+  } else {
+    sect.appendChild(renderActTable(acts.slice(0, 8)));
+  }
+  main.appendChild(sect);
+}
+
+function card(label, val, unit, statusCls) {
+  const valCls = 'val' + (statusCls ? ' ' + statusCls : '');
+  return el('div', 'card', '<div class="label">' + label + '</div><div class="' + valCls + '">' + val + '<span style="font-size:12px;color:var(--muted)"> ' + unit + '</span></div>');
+}
+
+function renderActTable(acts) {
+  const table = el('table');
+  table.innerHTML = '<tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Pace</th><th>HR</th></tr><tbody>' +
+    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td><td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
+    '</tbody>';
+  const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table); return wrap;
+}
+
+function getEff(s) {
+  if (!s.duration_min || s.awake_min == null) return 0;
+  return Math.round((s.duration_min / (s.duration_min + s.awake_min * 1.5)) * 100);
+}
+
+// ===== SLEEP =====
+function renderSleep(main) {
+  const sleeps = corosData.sleep || [];
+  main.appendChild(el('div', 'header', '<div><h2>Sleep</h2><div class="breadcrumb">Recovery / Sleep Analysis</div></div>'));
+
+  if (sleeps.length === 0) {
+    main.appendChild(el('div', 'section empty', '<p>No sleep data yet</p>'));
+    return;
+  }
+
+  const latest = sleeps[0] || {};
+  const deep = latest.deep_sleep_pct || 0;
+  const light = latest.light_sleep_pct || 0;
+  const rem = latest.rem_sleep_pct || 0;
+  const awake = Math.max(0, 100 - deep - light - rem);
+
+  // Stage balance
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🌙</span>Latest Night Stages'));
+  sect.innerHTML += '<div class="stage-bar"><div class="stage-deep" style="width:' + deep + '%"></div><div class="stage-light" style="width:' + light + '%"></div><div class="stage-rem" style="width:' + rem + '%"></div><div class="stage-awake" style="width:' + awake + '%"></div></div>' +
+    '<div class="legend"><span><span class="legend-dot" style="background:#7c3aed"></span>Deep ' + deep + '%</span><span><span class="legend-dot" style="background:#3b82f6"></span>Light ' + light + '%</span><span><span class="legend-dot" style="background:#f59e0b"></span>REM ' + rem + '%</span><span><span class="legend-dot" style="background:var(--accent)"></span>Awake ' + awake.toFixed(1) + '%</span></div>';
+  main.appendChild(sect);
+
+  // Sleep table
+  const sect2 = el('div', 'section');
+  sect2.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep History'));
+  const table = el('table');
+  table.innerHTML = '<tr><th>Date</th><th>Duration</th><th>Deep</th><th>Light</th><th>REM</th><th>Awake</th><th>Efficiency</th></tr><tbody>' +
+    sleeps.map(s => { const eff = getEff(s); return '<tr><td>' + (s.date || '-') + '</td><td>' + fmtDuration((s.duration_min || 0) * 60) + '</td><td>' + (s.deep_sleep_pct || '-') + '%</td><td>' + (s.light_sleep_pct || '-') + '%</td><td>' + (s.rem_sleep_pct || '-') + '%</td><td>' + (s.awake_min || '-') + ' min</td><td>' + eff + '%</td></tr>'; }).join('') +
+    '</tbody>';
+  const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table);
+  sect2.appendChild(wrap);
+  main.appendChild(sect2);
+}
+
+// ===== RECOVERY =====
+function renderRecovery(main) {
+  const sleeps = corosData.sleep || [];
+  main.appendChild(el('div', 'header', '<div><h2>Recovery</h2><div class="breadcrumb">Recovery Analysis</div></div>'));
+
+  // Use API/data.json analysis data if available
+  const score = analysisData && analysisData.recovery_score ? analysisData.recovery_score : null;
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">❤️</span>Recovery Score'));
+
+  if (score) {
+    const bandColor = score.band === 'green' ? '#10b981' : score.band === 'yellow' ? '#f59e0b' : '#e94560';
+    sect.innerHTML += '<div style="text-align:center;padding:20px"><div style="font-size:48px;font-weight:800;color:' + bandColor + '">' + fmtNum(score.recovery_score) + '</div><div style="font-size:13px;color:var(--muted);margin-top:4px">/100 — ' + score.band + '</div></div>';
+
+    if (score.components) {
+      const comp = score.components;
+      const grid = el('div', 'grid-2');
+      grid.appendChild(el('div', 'section', '<h3>❤️ HRV Score</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.hrv_score) + '</div><div style="font-size:11px;color:var(--muted)">Weight 30%</div>'));
+      grid.appendChild(el('div', 'section', '<h3>💓 RHR Score</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.rhr_score) + '</div><div style="font-size:11px;color:var(--muted)">Weight 20%</div>'));
+      grid.appendChild(el('div', 'section', '<h3>😴 Sleep Perf</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.sleep_performance) + '</div><div style="font-size:11px;color:var(--muted)">Weight 25%</div>'));
+      grid.appendChild(el('div', 'section', '<h3>🛏️ Sleep Eff</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.sleep_efficiency) + '</div><div style="font-size:11px;color:var(--muted)">Weight 15%</div>'));
+      sect.appendChild(grid);
+    }
+
+    if (score.penalty_applied > 0) {
+      sect.innerHTML += '<div style="margin-top:12px;font-size:12px;color:var(--muted)">Penalty: ' + fmtNum(score.penalty_applied);
+      if (score.training_load_penalty > 0) sect.innerHTML += ' | Training Load: ' + fmtNum(score.training_load_penalty);
+      if (score.resp_rate_trend_penalty > 0) sect.innerHTML += ' | Resp Trend: ' + fmtNum(score.resp_rate_trend_penalty);
+      sect.innerHTML += '</div>';
+    }
+  } else {
+    // Fallback
+    const avgHrv = sleeps.filter(s => s.hrv).reduce((s, x, _, a) => s + x.hrv / a.length, 0);
+    const avgRhr = sleeps.filter(s => s.resting_hr).reduce((s, x, _, a) => s + x.resting_hr / a.length, 0);
+    const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
+    const fscore = Math.round(avgEff * 0.6 + (avgHrv > 0 ? 30 : 20));
+    const fband = fscore >= 80 ? 'good' : fscore >= 60 ? 'moderate' : 'low';
+    sect.innerHTML += '<div style="text-align:center;padding:20px"><div style="font-size:48px;font-weight:800;color:#10b981">' + fscore + '</div><div style="font-size:13px;color:var(--muted);margin-top:4px">/100 — ' + fband + '</div></div>';
+  }
+
+  main.appendChild(sect);
+}
+
+// ===== BREATHING =====
+function renderBreathing(main) {
+  main.appendChild(el('div', 'header', '<div><h2>Breathing</h2><div class="breadcrumb">Respiratory Analysis</div></div>'));
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🫁</span>Breathing Metrics'));
+  sect.innerHTML += '<div class="empty"><div style="font-size:32px;margin-bottom:8px">🫁</div><p>Connect COROS wellness check to see SpO2 and respiratory rate</p></div>';
+  main.appendChild(sect);
+}
+
+// ===== JOURNAL =====
+function renderJournal(main) {
+  main.appendChild(el('div', 'header', '<div><h2>Journal</h2><div class="breadcrumb">Sleep Factors / Correlation</div></div>'));
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>Daily Journal'));
+
+  const form = el('div');
+  form.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px">' +
+    '<div><label style="font-size:11px;color:var(--muted)">Date</label><input type="date" id="jDate" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
+    '<div><label style="font-size:11px;color:var(--muted)">Alcohol (units)</label><input type="number" id="jAlcohol" min="0" max="10" value="0" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
+    '<div><label style="font-size:11px;color:var(--muted)">Caffeine after 14:00</label><select id="jCaffeine" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"><option value="false">No</option><option value="true">Yes</option></select></div>' +
+    '<div><label style="font-size:11px;color:var(--muted)">Late meal</label><select id="jLateMeal" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"><option value="false">No</option><option value="true">Yes</option></select></div>' +
+    '<div><label style="font-size:11px;color:var(--muted)">Screen before bed (min)</label><input type="number" id="jScreen" min="0" max="180" value="0" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
+    '<div><label style="font-size:11px;color:var(--muted)">Stress (1-5)</label><input type="number" id="jStress" min="1" max="5" value="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
+    '</div>' +
+    '<button onclick="saveJournal()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:4px;cursor:pointer">Save Entry</button>';
+  sect.appendChild(form);
+  main.appendChild(sect);
+  document.getElementById('jDate').value = new Date().toISOString().split('T')[0];
+}
+
+async function saveJournal() {
+  const entry = {
+    date: document.getElementById('jDate').value,
+    alcohol_units: parseInt(document.getElementById('jAlcohol').value) || 0,
+    caffeine_after_14: document.getElementById('jCaffeine').value === 'true' ? 1 : 0,
+    late_meal: document.getElementById('jLateMeal').value === 'true' ? 1 : 0,
+    screen_before_bed_min: parseInt(document.getElementById('jScreen').value) || 0,
+    stress_level: parseInt(document.getElementById('jStress').value) || 3
+  };
+
+  if (!entry.date) {
+    alert('กรุณาเลือกวันที่ก่อนบันทึก');
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/journal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: entry })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      alert('บันทึก Journal สำหรับวันที่ ' + entry.date + ' เรียบร้อย');
+      document.getElementById('jAlcohol').value = 0;
+      document.getElementById('jCaffeine').value = 'false';
+      document.getElementById('jLateMeal').value = 'false';
+      document.getElementById('jScreen').value = 0;
+      document.getElementById('jStress').value = 3;
+    } else {
+      alert('บันทึกไม่สำเร็จ: ' + (data.error || 'Unknown error'));
+    }
+  } catch (err) {
+    alert('เชื่อมต่อ server ไม่ได้: ' + err.message + ' (ใช้งานได้เฉพาะตอนรัน local server ที่มี /api/journal)');
+  }
+}
+
+// ===== ACTIVITIES =====
+function renderActivities(main) {
+  const acts = corosData.activities || [];
+  main.appendChild(el('div', 'header', '<div><h2>Activities</h2><div class="breadcrumb">Training / Activities</div></div>'));
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>All Activities'));
+  if (acts.length === 0) {
+    sect.appendChild(el('div', 'empty', '<p>No activities yet</p>'));
+  } else {
+    sect.appendChild(renderActTable(acts));
+  }
+  main.appendChild(sect);
+}
+
+// ===== WEEKLY =====
+function renderWeekly(main) {
+  const sleeps = corosData.sleep || [];
+  const daily = corosData.daily || [];
+
+  main.appendChild(el('div', 'header', '<div><h2>Weekly Report</h2><div class="breadcrumb">Auto-generated Summary</div></div>'));
+
+  // Use weekly_narrative from analysisData if available
+  if (analysisData && analysisData.weekly_narrative) {
+    const wn = analysisData.weekly_narrative;
+    const sect = el('div', 'section');
+    sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>สรุปสัปดาห์นี้'));
+
+    let html = '<div style="font-size:13.5px;line-height:1.7">';
+    if (wn.overview) html += '<p><strong>' + wn.overview + '</strong></p>';
+    if (wn.training_trends && wn.training_trends.strain_avg) {
+      html += '<p>📈 Training Load เฉลี่ย ' + wn.training_trends.strain_avg + '/21 — ' + wn.training_trends.strain_change + '%</p>';
+    }
+    if (wn.fitness) html += '<p>💪 ' + wn.fitness + '</p>';
+    if (wn.economy) html += '<p>🏃 ' + wn.economy + '</p>';
+    if (wn.insights && wn.insights.length > 0) {
+      html += '<p><strong>🔍 Insights:</strong></p><ul style="padding-left:20px">';
+      for (const i of wn.insights) html += '<li>' + i + '</li>';
+      html += '</ul>';
+    }
+    if (wn.next_week && wn.next_week.length > 0) {
+      html += '<p><strong>💡 สัปดาห์หน้า:</strong></p><ul style="padding-left:20px">';
+      for (const i of wn.next_week) html += '<li>' + i + '</li>';
+      html += '</ul>';
+    }
+    html += '</div>';
+    sect.innerHTML += html;
+    main.appendChild(sect);
+  } else {
+    // Fallback
+    const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
+    const avgDeep = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + (x.deep_sleep_pct || 0), 0) / sleeps.length) : 0;
+    const avgRem = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + (x.rem_sleep_pct || 0), 0) / sleeps.length) : 0;
+    const totalSteps = daily.reduce((s, x) => s + (x.steps || 0), 0);
+
+    const sect = el('div', 'section');
+    sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep Summary'));
+    sect.innerHTML += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">' +
+      '📊 สรุปการนอน (' + sleeps.length + ' คืน)\n' +
+      '- Sleep Efficiency เฉลี่ย: ' + avgEff + '%\n' +
+      '- Deep Sleep เฉลี่ย: ' + avgDeep + '%\n' +
+      '- REM เฉลี่ย: ' + avgRem + '%\n' +
+      '- Total Steps: ' + totalSteps.toLocaleString() + '\n' +
+      '</div>';
+    main.appendChild(sect);
+  }
+}
+
+// ===== INIT =====
+loadData();
