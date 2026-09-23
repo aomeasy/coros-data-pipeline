@@ -31,6 +31,27 @@ function statusClass(value, thresholds) {
   return 'status-red';
 }
 
+// wrap known Thai severity parentheticals in the narrative text with colored spans
+// (ดี/ดีมาก/ปกติ/พอดี = green, พอใช้ = yellow, ต่ำ/สูง/ควรปรับปรุง/ยาวเกินไป = red)
+function colorizeNarrative(text) {
+  if (!text) return '';
+  const rules = [
+    [/\(ดีมาก\)/g, 'tag-good'],
+    [/\(ดี\)/g, 'tag-good'],
+    [/\(ปกติ\)/g, 'tag-good'],
+    [/\(พอใช้\)/g, 'tag-warn'],
+    [/\(ต่ำ\)/g, 'tag-bad'],
+    [/\(สูง\)/g, 'tag-bad'],
+    [/\(ควรปรับปรุง\)/g, 'tag-bad'],
+    [/\(ยาวเกินไป[^)]*\)/g, 'tag-bad'],
+  ];
+  let out = text;
+  for (const [re, cls] of rules) {
+    out = out.replace(re, m => '<span class="' + cls + '">' + m + '</span>');
+  }
+  return out;
+}
+
 // ===== DATA LOADING =====
 async function loadData() {
   try {
@@ -78,7 +99,27 @@ function render(page) {
   }
 }
 
+// ===== MINI RING (shared by Sleep/Strain rings) =====
+// value/max null-safe: pass value=null to render an "empty" placeholder ring (no data)
+function miniRing(label, value, max, decimals) {
+  const r = 36, circumference = 2 * Math.PI * r;
+  const hasData = value != null && !isNaN(value);
+  const pct = hasData ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const offset = circumference - (pct / 100) * circumference;
+  const cls = hasData ? statusClass(pct, {green:80, yellow:50}) : 'status-empty';
+  const item = el('div', 'mini-ring-item');
+  item.innerHTML =
+    '<div class="mini-ring-wrap"><svg width="92" height="92" viewBox="0 0 92 92">' +
+    '<circle class="mini-ring-track" cx="46" cy="46" r="' + r + '"></circle>' +
+    '<circle class="mini-ring-progress ' + cls + '" cx="46" cy="46" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
+    '</svg><div class="mini-ring-center"><div class="pct">' + (hasData ? Number(value).toFixed(decimals || 0) : '–') + '</div></div></div>' +
+    '<div class="lbl">' + label + '</div>';
+  return item;
+}
+
 // ===== RECOVERY RING (Whoop-style, ใช้ analysisData.recovery_score) =====
+// รวม Sleep Performance + Strain เป็น mini-ring คู่กัน (3-ring layout แบบ Whoop)
 function renderRecoveryRing(main) {
   if (!analysisData || !analysisData.recovery_score) return;
   const rs = analysisData.recovery_score;
@@ -98,6 +139,18 @@ function renderRecoveryRing(main) {
       '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
     '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
     '<div class="ring-status-text ' + bandClass + '">' + String(rs.band || '').toUpperCase() + '</div>';
+
+  // Sleep Performance mini-ring (already computed backend-side in recovery_score.components)
+  const sleepPerf = rs.components ? rs.components.sleep_performance : null;
+  // Strain mini-ring — latest_strain is currently missing from data.json (backend export gap),
+  // so this correctly falls back to an empty "no data" ring instead of showing a fake number
+  const strain = analysisData.latest_strain ? analysisData.latest_strain.day_strain : null;
+
+  const row = el('div', 'triple-ring-row');
+  row.appendChild(miniRing('Sleep Perf', sleepPerf, 100, 0));
+  row.appendChild(miniRing('Strain /21', strain, 21, 1));
+  sect.appendChild(row);
+
   main.appendChild(sect);
 }
 
@@ -113,7 +166,7 @@ function renderNarrativeSection(main) {
 
   // Summary
   if (narrative.summary) {
-    html += '<p style="font-weight:600;margin-bottom:12px;font-size:14px">' + narrative.summary + '</p>';
+    html += '<p style="font-weight:600;margin-bottom:12px;font-size:14px">' + colorizeNarrative(narrative.summary) + '</p>';
   }
 
   // Sections
@@ -127,7 +180,7 @@ function renderNarrativeSection(main) {
 
   for (const [key, label] of Object.entries(sectionLabels)) {
     if (sections[key]) {
-      html += '<div style="margin-top:10px"><strong style="color:var(--accent)">' + label + '</strong><br>' + sections[key] + '</div>';
+      html += '<div style="margin-top:10px"><strong style="color:var(--accent)">' + label + '</strong><br>' + colorizeNarrative(sections[key]) + '</div>';
     }
   }
 
@@ -135,7 +188,7 @@ function renderNarrativeSection(main) {
   if (narrative.action_items && narrative.action_items.length > 0) {
     html += '<div style="margin-top:14px"><strong style="color:var(--success)">💡 คำแนะนำ</strong><ul style="margin-top:6px;padding-left:20px">';
     for (const item of narrative.action_items) {
-      html += '<li style="margin-bottom:3px">' + item + '</li>';
+      html += '<li style="margin-bottom:3px">' + colorizeNarrative(item) + '</li>';
     }
     html += '</ul></div>';
   }
@@ -279,15 +332,35 @@ function renderCoachSection(main) {
   main.appendChild(sect);
 }
 
+// ===== TODAY'S ACTIVITY (merged card — replaces the old loose Total Distance / Avg Pace tiles) =====
+function renderActivityCard(main, acts) {
+  if (!acts || acts.length === 0) return;
+  const sorted = [...acts].sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+  const latest = sorted[0];
+
+  const sect = el('div', 'section');
+  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Latest Activity'));
+
+  const card = el('div', 'activity-card');
+  card.innerHTML =
+    '<div class="a-head"><span class="a-sport">' + sportLabel(latest.sport_type) + '</span><span class="a-date">' + fmtDate(latest.start_time) + '</span></div>' +
+    '<div class="activity-stats">' +
+      '<div class="a-stat"><div class="a-val">' + fmtDist(latest.distance_m) + '</div><div class="a-lbl">Distance</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + fmtDuration(latest.duration_s) + '</div><div class="a-lbl">Duration</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + fmtPace(latest.avg_pace_s) + '</div><div class="a-lbl">Pace /km</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + (latest.avg_hr || '-') + '</div><div class="a-lbl">Avg HR</div></div>' +
+      '<div class="a-stat"><div class="a-val">' + (latest.calories_burned || '-') + '</div><div class="a-lbl">Calories</div></div>' +
+    '</div>';
+  sect.appendChild(card);
+  main.appendChild(sect);
+}
+
 // ===== DASHBOARD =====
 function renderDashboard(main) {
   const acts = corosData.activities || [];
   const sleeps = corosData.sleep || [];
   const daily = corosData.daily || [];
 
-  const totalDist = acts.reduce((s, a) => s + (a.distance_m || 0), 0);
-  const totalDur = acts.reduce((s, a) => s + (a.duration_s || 0), 0);
-  const avgPace = acts.length ? Math.round(acts.reduce((s, a) => s + (a.avg_pace_s || 0), 0) / acts.length) : 0;
   const totalSteps = daily.reduce((s, x) => s + (x.steps || 0), 0);
   const avgStress = daily.length ? Math.round(daily.reduce((s, x) => s + (x.stress_score || 0), 0) / daily.length) : 0;
   const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
@@ -295,29 +368,21 @@ function renderDashboard(main) {
   // Header
   main.appendChild(el('div', 'header', '<div><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>'));
 
-  // Recovery Ring — Whoop-style, บนสุดของ dashboard
+  // Recovery + Sleep Perf + Strain — Whoop-style 3-ring, บนสุดของ dashboard
   renderRecoveryRing(main);
 
   // Narrative section (Phase 6)
   renderNarrativeSection(main);
 
-  // Cards
+  // Latest Activity — merged distance/pace/duration/HR into one contextual card
+  renderActivityCard(main, acts);
+
+  // Remaining summary cards (distance/pace removed — now live in the Activity card above)
   const cards = el('div', 'cards');
-  cards.appendChild(card('Total Distance', (totalDist / 1000).toFixed(1), 'km'));
-  cards.appendChild(card('Avg Pace', fmtPace(avgPace), '/km'));
   cards.appendChild(card('Total Steps', totalSteps.toLocaleString(), ''));
   cards.appendChild(card('Sleep Efficiency', avgEff + '%', 'average', statusClass(avgEff, {green:90, yellow:70})));
   cards.appendChild(card('Avg Stress', avgStress, '', statusClass(100 - avgStress, {green:70, yellow:50}))); // stress: ยิ่งต่ำยิ่งดี เลยกลับค่าก่อนเทียบ threshold
   cards.appendChild(card('Activities', acts.length, 'total'));
-
-  // Add Strain card if available (Recovery card ย้ายไปเป็น ring ด้านบนแล้ว ไม่ซ้ำ)
-  if (analysisData && analysisData.latest_strain) {
-    const ls = analysisData.latest_strain;
-    const strainCard = el('div', 'card');
-    strainCard.innerHTML = '<div class="label">Strain</div><div class="val">' + (ls.day_strain != null ? Number(ls.day_strain).toFixed(1) : '-') + '<span style="font-size:12px;color:var(--muted)"> /21</span></div>';
-    cards.appendChild(strainCard);
-  }
-
   main.appendChild(cards);
 
   // Training Analytics section
