@@ -3,8 +3,6 @@ let corosData = { activities: [], sleep: [], daily: [], journals: [] };
 let analysisData = null;
 
 // ===== SPORT TYPE MAPPING =====
-// เพิ่ม code ตามที่เจอจริงใน data — ต้องเช็ค COROS-MCP docs ให้ครบ
-// (ตอนนี้ยืนยันแล้วว่า 100 = Outdoor Run จากข้อมูลจริง โค้ดอื่นยังเป็นสมมติฐาน)
 const SPORT_TYPE_MAP = {
   100: 'Outdoor Run',
   101: 'Indoor Run',
@@ -16,23 +14,20 @@ function sportLabel(code) {
 }
 
 // ===== HELPERS =====
-function fmtPace(s) { if (!s) return '-'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; }
-function fmtDuration(s) { if (!s) return '-'; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h > 0 ? h + 'h ' + m + 'm' : m + 'm'; }
-function fmtDist(m) { if (!m) return '-'; return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : m + ' m'; }
-function fmtDate(s) { if (!s) return '-'; return s.replace('T', ' ').substring(0, 16); }
-function fmtDateShort(s) { if (!s) return '-'; return s.substring(5, 10); }
+function fmtPace(s) { if (!s) return '–'; const m = Math.floor(s / 60); const sec = Math.floor(s % 60); return m + ':' + (sec < 10 ? '0' : '') + sec; }
+function fmtDuration(s) { if (!s) return '–'; const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h > 0 ? h + 'h ' + m + 'm' : m + 'm'; }
+function fmtDist(m) { if (!m) return '–'; return m >= 1000 ? (m / 1000).toFixed(2) + ' km' : m + ' m'; }
+function fmtDate(s) { if (!s) return '–'; return s.replace('T', ' ').substring(0, 16); }
+function fmtDateShort(s) { if (!s) return '–'; return s.substring(5, 10); }
 function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; }
-function fmtNum(n) { return n != null && !isNaN(n) ? (Number.isInteger(n) ? n : n.toFixed(1)) : '-'; }
+function fmtNum(n) { return n != null && !isNaN(n) ? (Number.isInteger(n) ? n : n.toFixed(1)) : '–'; }
 function statusClass(value, thresholds) {
-  // thresholds = {green: 90, yellow: 70} เช่น sleep efficiency >=90 เขียว, >=70 เหลือง, ต่ำกว่าแดง
   if (value == null || isNaN(value)) return '';
   if (value >= thresholds.green) return 'status-green';
   if (value >= thresholds.yellow) return 'status-yellow';
   return 'status-red';
 }
 
-// wrap known Thai severity parentheticals in the narrative text with colored spans
-// (ดี/ดีมาก/ปกติ/พอดี = green, พอใช้ = yellow, ต่ำ/สูง/ควรปรับปรุง/ยาวเกินไป = red)
 function colorizeNarrative(text) {
   if (!text) return '';
   const rules = [
@@ -59,13 +54,8 @@ async function loadData() {
     if (res.ok) corosData = await res.json();
   } catch (e) { console.error('Load data.json failed:', e); }
 
-  // export.py รวม analysis fields (recovery_score, narrative, training_analytics ฯลฯ)
-  // ไว้ที่ top level ของ data.json ตัวเดียวกันอยู่แล้ว — ใช้เป็นค่าเริ่มต้นก่อน
-  // เพื่อให้ทำงานได้บน GitHub Pages (static host ไม่มี /api/* endpoint จริง)
   analysisData = corosData;
 
-  // ถ้ารัน local server (app.py) อยู่ /api/analysis จะให้ข้อมูลสดกว่า data.json
-  // ที่ export ไว้ตอนเช้า — ลองเรียกทับ ถ้าเรียกไม่ได้ (เช่นบน GitHub Pages) ก็ไม่เป็นไร
   try {
     const analysisRes = await fetch('/api/analysis');
     if (analysisRes.ok) analysisData = await analysisRes.json();
@@ -99,27 +89,46 @@ function render(page) {
   }
 }
 
-// ===== MINI RING (shared by Sleep/Strain rings) =====
-// value/max null-safe: pass value=null to render an "empty" placeholder ring (no data)
-function miniRing(label, value, max, decimals) {
-  const r = 36, circumference = 2 * Math.PI * r;
+// ===== MINI RING (Sleep Perf — a % maps naturally to a ring) =====
+function miniRing(value, max, decimals) {
+  const r = 26, circumference = 2 * Math.PI * r;
   const hasData = value != null && !isNaN(value);
   const pct = hasData ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
   const offset = circumference - (pct / 100) * circumference;
   const cls = hasData ? statusClass(pct, {green:80, yellow:50}) : 'status-empty';
-  const item = el('div', 'mini-ring-item');
-  item.innerHTML =
-    '<div class="mini-ring-wrap"><svg width="92" height="92" viewBox="0 0 92 92">' +
-    '<circle class="mini-ring-track" cx="46" cy="46" r="' + r + '"></circle>' +
-    '<circle class="mini-ring-progress ' + cls + '" cx="46" cy="46" r="' + r +
-      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
-    '</svg><div class="mini-ring-center"><div class="pct">' + (hasData ? Number(value).toFixed(decimals || 0) : '–') + '</div></div></div>' +
-    '<div class="lbl">' + label + '</div>';
-  return item;
+  const wrap = el('div', 'mini-ring-wrap');
+  wrap.innerHTML =
+    '<svg width="64" height="64" viewBox="0 0 64 64">' +
+    '<circle class="mini-ring-track" cx="32" cy="32" r="' + r + '"></circle>' +
+    '<circle class="mini-ring-progress ' + cls + '" cx="32" cy="32" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + circumference + '"></circle>' +
+    '</svg><div class="mini-ring-center">' + (hasData ? Number(value).toFixed(decimals || 0) : '–') + '</div>';
+  // animate in on next frame
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const c = wrap.querySelector('.mini-ring-progress');
+    if (c) c.style.strokeDashoffset = offset;
+  }));
+  return wrap;
 }
 
-// ===== RECOVERY RING (Whoop-style, ใช้ analysisData.recovery_score) =====
-// รวม Sleep Performance + Strain เป็น mini-ring คู่กัน (3-ring layout แบบ Whoop)
+// ===== STRAIN GAUGE (0-21 linear scale — a bar, not a second ring, since it isn't a %) =====
+function strainGauge(value) {
+  const max = 21;
+  const hasData = value != null && !isNaN(value);
+  const pct = hasData ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const cls = hasData ? statusClass(pct, {green:70, yellow:35}) : 'status-empty';
+  const wrap = el('div');
+  wrap.innerHTML =
+    '<div class="gauge-track"><div class="gauge-fill ' + cls + '" style="width:0%"></div></div>' +
+    '<div class="gauge-ticks"><span>0</span><span>7</span><span>14</span><span>21</span></div>';
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const f = wrap.querySelector('.gauge-fill');
+    if (f) f.style.width = pct + '%';
+  }));
+  return wrap;
+}
+
+// ===== RECOVERY RING (hero) + secondary row (Sleep Perf ring / Strain gauge) =====
 function renderRecoveryRing(main) {
   if (!analysisData || !analysisData.recovery_score) return;
   const rs = analysisData.recovery_score;
@@ -127,29 +136,46 @@ function renderRecoveryRing(main) {
   if (pct == null || isNaN(pct)) return;
 
   const bandClass = rs.band === 'green' ? 'status-green' : rs.band === 'yellow' ? 'status-yellow' : 'status-red';
-  const r = 78, circumference = 2 * Math.PI * r;
+  const bandLabel = rs.band === 'green' ? 'พร้อมซ้อม' : rs.band === 'yellow' ? 'ควรผ่อน' : 'ควรพัก';
+  const r = 84, circumference = 2 * Math.PI * r;
   const clamped = Math.max(0, Math.min(100, pct));
   const offset = circumference - (clamped / 100) * circumference;
 
-  const sect = el('div', 'section recovery-ring-section');
+  const sect = el('div', 'recovery-ring-section');
   sect.innerHTML =
-    '<div class="ring-wrap"><svg width="180" height="180" viewBox="0 0 180 180">' +
-    '<circle class="ring-track" cx="90" cy="90" r="' + r + '"></circle>' +
-    '<circle class="ring-progress ' + bandClass + '" cx="90" cy="90" r="' + r +
-      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + offset + '"></circle>' +
-    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '%</div><div class="lbl">Recovery</div></div></div>' +
-    '<div class="ring-status-text ' + bandClass + '">' + String(rs.band || '').toUpperCase() + '</div>';
+    '<div class="ring-wrap"><svg width="188" height="188" viewBox="0 0 188 188">' +
+    '<circle class="ring-track" cx="94" cy="94" r="' + r + '"></circle>' +
+    '<circle class="ring-progress ' + bandClass + '" cx="94" cy="94" r="' + r +
+      '" stroke-dasharray="' + circumference + '" stroke-dashoffset="' + circumference + '"></circle>' +
+    '</svg><div class="ring-center"><div class="pct">' + fmtNum(pct) + '</div><div class="lbl">Recovery</div></div></div>' +
+    '<div class="band-pill ' + bandClass + '"><span class="dot"></span>' + bandLabel + '</div>';
 
-  // Sleep Performance mini-ring (already computed backend-side in recovery_score.components)
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const c = sect.querySelector('.ring-progress');
+    if (c) c.style.strokeDashoffset = offset;
+  }));
+
   const sleepPerf = rs.components ? rs.components.sleep_performance : null;
-  // Strain mini-ring — latest_strain is currently missing from data.json (backend export gap),
-  // so this correctly falls back to an empty "no data" ring instead of showing a fake number
   const strain = analysisData.latest_strain ? analysisData.latest_strain.day_strain : null;
 
-  const row = el('div', 'triple-ring-row');
-  row.appendChild(miniRing('Sleep Perf', sleepPerf, 100, 0));
-  row.appendChild(miniRing('Strain /21', strain, 21, 1));
-  sect.appendChild(row);
+  const row = el('div', 'secondary-row');
+
+  const sleepBlock = el('div', 'metric-block');
+  const sleepRing = miniRing(sleepPerf, 100, 0);
+  const sleepWrap = el('div', 'secondary-row');
+  sleepWrap.style.gap = '12px';
+  sleepWrap.appendChild(sleepRing);
+  const sleepText = el('div');
+  sleepText.innerHTML = '<div class="m-lbl">Sleep Performance</div><div class="m-val">ของเป้าหมายที่ต้องการ</div>';
+  sleepWrap.appendChild(sleepText);
+
+  const strainBlock = el('div');
+  strainBlock.style.marginTop = '18px';
+  strainBlock.innerHTML = '<div class="m-lbl">Strain <span class="num" style="color:var(--text-dim)">' + (strain != null ? fmtNum(strain) : '–') + ' / 21</span></div>';
+  strainBlock.appendChild(strainGauge(strain));
+
+  sect.appendChild(sleepWrap);
+  sect.appendChild(strainBlock);
 
   main.appendChild(sect);
 }
@@ -162,38 +188,26 @@ function renderNarrativeSection(main) {
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>สรุปภาพรวมวันนี้'));
 
-  let html = '<div style="font-size:13.5px;line-height:1.7;color:var(--text)">';
-
-  // Summary
+  let html = '';
   if (narrative.summary) {
-    html += '<p style="font-weight:600;margin-bottom:12px;font-size:14px">' + colorizeNarrative(narrative.summary) + '</p>';
+    html += '<p class="narrative-summary">' + colorizeNarrative(narrative.summary) + '</p>';
   }
 
-  // Sections
   const sections = narrative.sections || {};
-  const sectionLabels = {
-    recovery: '❤️ Recovery',
-    sleep: '😴 การนอน',
-    training: '🏋️ การซ้อม',
-    health: '⚠️ สุขภาพ',
-  };
+  const sectionLabels = { recovery: 'Recovery', sleep: 'การนอน', training: 'การซ้อม', health: 'สุขภาพ' };
 
   for (const [key, label] of Object.entries(sectionLabels)) {
     if (sections[key]) {
-      html += '<div style="margin-top:10px"><strong style="color:var(--accent)">' + label + '</strong><br>' + colorizeNarrative(sections[key]) + '</div>';
+      html += '<div class="narrative-block"><strong>' + label + '</strong>' + colorizeNarrative(sections[key]) + '</div>';
     }
   }
 
-  // Action items
   if (narrative.action_items && narrative.action_items.length > 0) {
-    html += '<div style="margin-top:14px"><strong style="color:var(--success)">💡 คำแนะนำ</strong><ul style="margin-top:6px;padding-left:20px">';
-    for (const item of narrative.action_items) {
-      html += '<li style="margin-bottom:3px">' + colorizeNarrative(item) + '</li>';
-    }
+    html += '<div class="action-list"><div class="al-title">คำแนะนำ</div><ul>';
+    for (const item of narrative.action_items) html += '<li>' + colorizeNarrative(item) + '</li>';
     html += '</ul></div>';
   }
 
-  html += '</div>';
   sect.innerHTML += html;
   main.appendChild(sect);
 }
@@ -206,54 +220,40 @@ function renderTrainingSection(main) {
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Training Analytics'));
 
-  let html = '<div style="font-size:13px;line-height:1.7">';
-
-  // CTL/ATL/TSB
   if (ta.fitness) {
     const f = ta.fitness;
-    html += '<p><strong>Fitness / Fatigue / Form:</strong><br>';
-    html += 'CTL (Fitness): ' + fmtNum(f.ctl) + ' | ATL (Fatigue): ' + fmtNum(f.atl) + ' | TSB (Form): ' + (f.tsb != null ? (f.tsb >= 0 ? '+' : '') + fmtNum(f.tsb) : '-') + '<br>';
-    html += 'สถานะ: ' + (f.confidence === 'stable' ? 'ข้อมูลเพียงพอ' : f.confidence === 'moderate' ? 'กำลังสะสม' : 'ข้อมูลไม่พอ');
-    html += '</p>';
+    const grid = el('div', 'grid-2');
+    grid.innerHTML =
+      '<div class="g-cell"><h4>FITNESS (CTL)</h4><div class="g-val">' + fmtNum(f.ctl) + '</div></div>' +
+      '<div class="g-cell"><h4>FATIGUE (ATL)</h4><div class="g-val">' + fmtNum(f.atl) + '</div></div>' +
+      '<div class="g-cell"><h4>FORM (TSB)</h4><div class="g-val ' + (f.tsb < 0 ? 'status-yellow' : 'status-green') + '">' + (f.tsb != null ? (f.tsb >= 0 ? '+' : '') + fmtNum(f.tsb) : '–') + '</div></div>' +
+      '<div class="g-cell"><h4>สถานะข้อมูล</h4><div class="g-sub" style="font-size:12px;margin-top:2px">' + (f.confidence === 'stable' ? 'เพียงพอ' : f.confidence === 'moderate' ? 'กำลังสะสม' : 'ยังไม่พอ') + '</div></div>';
+    sect.appendChild(grid);
   }
 
-  // Economy
+  let html = '<div style="font-size:13px;line-height:1.7;color:var(--text-dim);margin-top:14px">';
+
   if (ta.economy && ta.economy.trend) {
     const econ = ta.economy;
-    html += '<p><strong>Running Economy:</strong><br>';
-    if (econ.trend === 'improving') {
-      html += '✅ ดีขึ้น ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% — วิ่งเร็วขึ้นที่ HR เดียวกัน';
-    } else if (econ.trend === 'declining') {
-      html += '⚠️ แย่ลง ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% — อาจยังไม่ฟื้น';
-    } else {
-      html += 'คงที่';
-    }
+    html += '<p><strong style="color:var(--text)">Running Economy — </strong>';
+    if (econ.trend === 'improving') html += 'ดีขึ้น ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% (วิ่งเร็วขึ้นที่ HR เดียวกัน)';
+    else if (econ.trend === 'declining') html += 'แย่ลง ' + Math.abs(econ.economy_change_pct || 0).toFixed(1) + '% (อาจยังไม่ฟื้น)';
+    else html += 'คงที่';
     html += '</p>';
   }
 
-  // Race Readiness
   if (ta.readiness && ta.readiness.readiness_score != null) {
     const r = ta.readiness;
-    html += '<p><strong>Race Readiness Score:</strong><br>';
-    html += 'คะแนน: ' + fmtNum(r.readiness_score) + '/100 — ';
-    if (r.band === 'ready') {
-      html += '<span style="color:var(--success);font-weight:600">พร้อมแข่ง</span>';
-    } else if (r.band === 'moderate') {
-      html += '<span style="color:var(--warning);font-weight:600">พอใช้</span>';
-    } else {
-      html += '<span style="color:var(--accent);font-weight:600">ยังไม่พร้อม</span>';
-    }
-    html += '</p>';
+    const cls = r.band === 'ready' ? 'tag-good' : r.band === 'moderate' ? 'tag-warn' : '';
+    html += '<p style="margin-top:8px"><strong style="color:var(--text)">Race Readiness — </strong>' +
+      '<span class="num">' + fmtNum(r.readiness_score) + '/100</span> — <span class="' + cls + '">' +
+      (r.band === 'ready' ? 'พร้อมแข่ง' : r.band === 'moderate' ? 'พอใช้' : 'ยังไม่พร้อม') + '</span></p>';
   }
 
-  // Strain-Performance
   if (ta.strain_performance && ta.strain_performance.lag_days != null) {
     const sp = ta.strain_performance;
-    html += '<p><strong>Strain → Performance:</strong><br>';
-    html += 'Lag: ' + sp.lag_days + ' วัน (ซ้อมหนักแล้ว performance ลดลง ' + sp.lag_days + ' วันต่อมา)';
-    if (sp.correlation) {
-      html += ' | correlation: ' + sp.correlation;
-    }
+    html += '<p style="margin-top:8px"><strong style="color:var(--text)">Strain → Performance — </strong>lag ' + sp.lag_days + ' วัน';
+    if (sp.correlation) html += ' · corr <span class="num">' + sp.correlation + '</span>';
     html += '</p>';
   }
 
@@ -272,39 +272,29 @@ function renderHealthRiskSection(main) {
 
   const hasRisk = (illness && illness.risk_level && illness.risk_level !== 'none') ||
                   (overtraining && overtraining.risk_level && overtraining.risk_level !== 'none');
-
   if (!hasRisk) return;
 
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">⚠️</span>ความเสี่ยง'));
 
-  let html = '<div style="font-size:13px;line-height:1.7">';
+  let html = '<div style="font-size:13px;line-height:1.75;color:var(--text-dim)">';
 
   if (illness && illness.risk_level && illness.risk_level !== 'none') {
-    const levelColor = illness.risk_level === 'high' ? 'var(--accent)' : 'var(--warning)';
-    html += '<p><strong>ความเสี่ยงป่วย: <span style="color:' + levelColor + '">' + illness.risk_score + '/4 (' + illness.risk_level + ')</span></strong>';
+    const cls = illness.risk_level === 'high' ? 'tag-bad' : 'tag-warn';
+    html += '<p><strong style="color:var(--text)">ความเสี่ยงป่วย — </strong><span class="' + cls + '">' + illness.risk_score + '/4 (' + illness.risk_level + ')</span>';
     if (illness.signals && illness.signals.length > 0) {
-      const signalLabels = {
-        rhr_high: 'RHR สูงผิดปกติ',
-        hrv_low: 'HRV ต่ำผิดปกติ',
-        skin_temp_high: 'Skin Temp สูงผิดปกติ',
-        resp_rate_high: 'Respiratory Rate สูงผิดปกติ'
-      };
-      html += '<br>สัญญาณ: ' + illness.signals.map(s => signalLabels[s] || s).join(', ');
+      const signalLabels = { rhr_high: 'RHR สูงผิดปกติ', hrv_low: 'HRV ต่ำผิดปกติ', skin_temp_high: 'Skin Temp สูงผิดปกติ', resp_rate_high: 'Respiratory Rate สูงผิดปกติ' };
+      html += '<br><span style="color:var(--text-faint);font-size:12px">' + illness.signals.map(s => signalLabels[s] || s).join(' · ') + '</span>';
     }
     html += '</p>';
   }
 
   if (overtraining && overtraining.risk_level && overtraining.risk_level !== 'none') {
-    const levelColor = overtraining.risk_level === 'high' ? 'var(--accent)' : overtraining.risk_level === 'medium' ? 'var(--warning)' : 'var(--info)';
-    html += '<p><strong>ความเสี่ยง Overtraining: <span style="color:' + levelColor + '">' + overtraining.risk_level + '</span></strong>';
+    const cls = overtraining.risk_level === 'high' ? 'tag-bad' : overtraining.risk_level === 'medium' ? 'tag-warn' : 'tag-good';
+    html += '<p style="margin-top:10px"><strong style="color:var(--text)">Overtraining — </strong><span class="' + cls + '">' + overtraining.risk_level + '</span>';
     if (overtraining.flags && overtraining.flags.length > 0) {
-      const flagLabels = {
-        acwr_high: 'ACWR สูงต่อเนื่อง',
-        hrv_declining: 'HRV แนวโน้มลด',
-        recovery_low: 'Recovery ต่ำติดต่อกัน'
-      };
-      html += '<br>สัญญาณ: ' + overtraining.flags.map(f => flagLabels[f] || f).join(', ');
+      const flagLabels = { acwr_high: 'ACWR สูงต่อเนื่อง', hrv_declining: 'HRV แนวโน้มลด', recovery_low: 'Recovery ต่ำติดต่อกัน' };
+      html += '<br><span style="color:var(--text-faint);font-size:12px">' + overtraining.flags.map(f => flagLabels[f] || f).join(' · ') + '</span>';
     }
     html += '</p>';
   }
@@ -322,17 +312,17 @@ function renderCoachSection(main) {
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">💡</span>คำแนะนำ'));
 
-  let html = '<ul style="padding-left:20px;font-size:13px;line-height:1.8">';
+  let html = '<ul style="list-style:none">';
   for (const rec of recs) {
-    const priorityColor = rec.priority === 'high' ? 'var(--accent)' : rec.priority === 'medium' ? 'var(--warning)' : 'var(--info)';
-    html += '<li style="margin-bottom:6px"><span style="color:' + priorityColor + ';font-size:10px;text-transform:uppercase;font-weight:600">[' + rec.priority + ']</span> ' + rec.message + '</li>';
+    const cls = rec.priority === 'high' ? 'tag-bad' : rec.priority === 'medium' ? 'tag-warn' : 'tag-good';
+    html += '<li style="margin-bottom:10px;font-size:13px;color:var(--text-dim);line-height:1.6"><span class="' + cls + '" style="font-size:9.5px;text-transform:uppercase;letter-spacing:0.03em;margin-right:8px">' + rec.priority + '</span>' + rec.message + '</li>';
   }
   html += '</ul>';
   sect.innerHTML += html;
   main.appendChild(sect);
 }
 
-// ===== TODAY'S ACTIVITY (merged card — replaces the old loose Total Distance / Avg Pace tiles) =====
+// ===== TODAY'S ACTIVITY =====
 function renderActivityCard(main, acts) {
   if (!acts || acts.length === 0) return;
   const sorted = [...acts].sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
@@ -341,17 +331,18 @@ function renderActivityCard(main, acts) {
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Latest Activity'));
 
-  const card = el('div', 'activity-card');
-  card.innerHTML =
-    '<div class="a-head"><span class="a-sport">' + sportLabel(latest.sport_type) + '</span><span class="a-date">' + fmtDate(latest.start_time) + '</span></div>' +
-    '<div class="activity-stats">' +
-      '<div class="a-stat"><div class="a-val">' + fmtDist(latest.distance_m) + '</div><div class="a-lbl">Distance</div></div>' +
-      '<div class="a-stat"><div class="a-val">' + fmtDuration(latest.duration_s) + '</div><div class="a-lbl">Duration</div></div>' +
-      '<div class="a-stat"><div class="a-val">' + fmtPace(latest.avg_pace_s) + '</div><div class="a-lbl">Pace /km</div></div>' +
-      '<div class="a-stat"><div class="a-val">' + (latest.avg_hr || '-') + '</div><div class="a-lbl">Avg HR</div></div>' +
-      '<div class="a-stat"><div class="a-val">' + (latest.calories_burned || '-') + '</div><div class="a-lbl">Calories</div></div>' +
-    '</div>';
-  sect.appendChild(card);
+  const row = el('div', 'activity-row');
+  row.innerHTML = '<span class="a-sport">' + sportLabel(latest.sport_type) + '</span><span class="a-date num">' + fmtDate(latest.start_time) + '</span>';
+  sect.appendChild(row);
+
+  const stats = el('div', 'activity-stats');
+  stats.innerHTML =
+    '<div class="a-stat"><div class="a-val">' + fmtDist(latest.distance_m) + '</div><div class="a-lbl">DIST</div></div>' +
+    '<div class="a-stat"><div class="a-val">' + fmtDuration(latest.duration_s) + '</div><div class="a-lbl">TIME</div></div>' +
+    '<div class="a-stat"><div class="a-val">' + fmtPace(latest.avg_pace_s) + '</div><div class="a-lbl">PACE</div></div>' +
+    '<div class="a-stat"><div class="a-val">' + (latest.avg_hr || '–') + '</div><div class="a-lbl">HR</div></div>' +
+    '<div class="a-stat"><div class="a-val">' + (latest.calories_burned || '–') + '</div><div class="a-lbl">CAL</div></div>';
+  sect.appendChild(stats);
   main.appendChild(sect);
 }
 
@@ -365,57 +356,42 @@ function renderDashboard(main) {
   const avgStress = daily.length ? Math.round(daily.reduce((s, x) => s + (x.stress_score || 0), 0) / daily.length) : 0;
   const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
 
-  // Header
-  main.appendChild(el('div', 'header', '<div><h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Dashboard</h2><div class="breadcrumb">Overview / Summary</div>'));
 
-  // Recovery + Sleep Perf + Strain — Whoop-style 3-ring, บนสุดของ dashboard
   renderRecoveryRing(main);
-
-  // Narrative section (Phase 6)
   renderNarrativeSection(main);
-
-  // Latest Activity — merged distance/pace/duration/HR into one contextual card
   renderActivityCard(main, acts);
 
-  // Remaining summary cards (distance/pace removed — now live in the Activity card above)
-  const cards = el('div', 'cards');
-  cards.appendChild(card('Total Steps', totalSteps.toLocaleString(), ''));
-  cards.appendChild(card('Sleep Efficiency', avgEff + '%', 'average', statusClass(avgEff, {green:90, yellow:70})));
-  cards.appendChild(card('Avg Stress', avgStress, '', statusClass(100 - avgStress, {green:70, yellow:50}))); // stress: ยิ่งต่ำยิ่งดี เลยกลับค่าก่อนเทียบ threshold
-  cards.appendChild(card('Activities', acts.length, 'total'));
-  main.appendChild(cards);
+  const sect = el('div', 'section');
+  const strip = el('div', 'stat-strip');
+  strip.innerHTML =
+    '<div class="stat"><div class="s-val">' + totalSteps.toLocaleString() + '</div><div class="s-lbl">STEPS</div></div>' +
+    '<div class="stat"><div class="s-val ' + statusClass(avgEff, {green:90, yellow:70}) + '">' + avgEff + '%</div><div class="s-lbl">SLEEP EFF</div></div>' +
+    '<div class="stat"><div class="s-val ' + statusClass(100 - avgStress, {green:70, yellow:50}) + '">' + avgStress + '</div><div class="s-lbl">STRESS</div></div>' +
+    '<div class="stat"><div class="s-val">' + acts.length + '</div><div class="s-lbl">ACTIVITIES</div></div>';
+  sect.appendChild(strip);
+  main.appendChild(sect);
 
-  // Training Analytics section
   renderTrainingSection(main);
-
-  // Health Risk section
   renderHealthRiskSection(main);
-
-  // Coach Recommendations
   renderCoachSection(main);
 
-  // Recent activities
-  const sect = el('div', 'section');
-  sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Recent Activities'));
+  const sect2 = el('div', 'section');
+  sect2.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>Recent Activities'));
   if (acts.length === 0) {
-    sect.appendChild(el('div', 'empty', '<div style="font-size:32px;margin-bottom:8px">🏃</div><p>No activities yet</p>'));
+    sect2.appendChild(el('div', 'empty', '<div class="e-icon">🏃</div><p>ยังไม่มีข้อมูลกิจกรรม — เมื่อ sync จาก COROS แล้วจะแสดงที่นี่</p>'));
   } else {
-    sect.appendChild(renderActTable(acts.slice(0, 8)));
+    sect2.appendChild(renderActTable(acts.slice(0, 8)));
   }
-  main.appendChild(sect);
-}
-
-function card(label, val, unit, statusCls) {
-  const valCls = 'val' + (statusCls ? ' ' + statusCls : '');
-  return el('div', 'card', '<div class="label">' + label + '</div><div class="' + valCls + '">' + val + '<span style="font-size:12px;color:var(--muted)"> ' + unit + '</span></div>');
+  main.appendChild(sect2);
 }
 
 function renderActTable(acts) {
   const table = el('table');
-  table.innerHTML = '<tr><th>Date</th><th>Sport</th><th>Distance</th><th>Duration</th><th>Pace</th><th>HR</th></tr><tbody>' +
-    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td><td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + ' /km</td><td>' + (a.avg_hr || '-') + ' bpm</td></tr>').join('') +
+  table.innerHTML = '<tr><th>Date</th><th>Sport</th><th>Dist</th><th>Time</th><th>Pace</th><th>HR</th></tr><tbody>' +
+    acts.map(a => '<tr><td>' + fmtDate(a.start_time) + '</td><td><span class="badge">' + sportLabel(a.sport_type) + '</span></td><td>' + fmtDist(a.distance_m) + '</td><td>' + fmtDuration(a.duration_s) + '</td><td>' + fmtPace(a.avg_pace_s) + '</td><td>' + (a.avg_hr || '–') + '</td></tr>').join('') +
     '</tbody>';
-  const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table); return wrap;
+  const wrap = el('div', 'overflow-x'); wrap.appendChild(table); return wrap;
 }
 
 function getEff(s) {
@@ -426,10 +402,10 @@ function getEff(s) {
 // ===== SLEEP =====
 function renderSleep(main) {
   const sleeps = corosData.sleep || [];
-  main.appendChild(el('div', 'header', '<div><h2>Sleep</h2><div class="breadcrumb">Recovery / Sleep Analysis</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Sleep</h2><div class="breadcrumb">Recovery / Sleep Analysis</div>'));
 
   if (sleeps.length === 0) {
-    main.appendChild(el('div', 'section empty', '<p>No sleep data yet</p>'));
+    main.appendChild(el('div', 'section empty', '<div class="e-icon">🌙</div><p>ยังไม่มีข้อมูลการนอน</p>'));
     return;
   }
 
@@ -439,21 +415,19 @@ function renderSleep(main) {
   const rem = latest.rem_sleep_pct || 0;
   const awake = Math.max(0, 100 - deep - light - rem);
 
-  // Stage balance
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">🌙</span>Latest Night Stages'));
   sect.innerHTML += '<div class="stage-bar"><div class="stage-deep" style="width:' + deep + '%"></div><div class="stage-light" style="width:' + light + '%"></div><div class="stage-rem" style="width:' + rem + '%"></div><div class="stage-awake" style="width:' + awake + '%"></div></div>' +
-    '<div class="legend"><span><span class="legend-dot" style="background:#7c3aed"></span>Deep ' + deep + '%</span><span><span class="legend-dot" style="background:#3b82f6"></span>Light ' + light + '%</span><span><span class="legend-dot" style="background:#f59e0b"></span>REM ' + rem + '%</span><span><span class="legend-dot" style="background:var(--accent)"></span>Awake ' + awake.toFixed(1) + '%</span></div>';
+    '<div class="legend"><span><span class="legend-dot" style="background:#8b7ae0"></span>Deep <span class="num">' + deep + '%</span></span><span><span class="legend-dot" style="background:#5b9bd5"></span>Light <span class="num">' + light + '%</span></span><span><span class="legend-dot" style="background:var(--signal)"></span>REM <span class="num">' + rem + '%</span></span><span><span class="legend-dot" style="background:var(--bad)"></span>Awake <span class="num">' + awake.toFixed(1) + '%</span></span></div>';
   main.appendChild(sect);
 
-  // Sleep table
   const sect2 = el('div', 'section');
   sect2.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep History'));
   const table = el('table');
-  table.innerHTML = '<tr><th>Date</th><th>Duration</th><th>Deep</th><th>Light</th><th>REM</th><th>Awake</th><th>Efficiency</th></tr><tbody>' +
-    sleeps.map(s => { const eff = getEff(s); return '<tr><td>' + (s.date || '-') + '</td><td>' + fmtDuration((s.duration_min || 0) * 60) + '</td><td>' + (s.deep_sleep_pct || '-') + '%</td><td>' + (s.light_sleep_pct || '-') + '%</td><td>' + (s.rem_sleep_pct || '-') + '%</td><td>' + (s.awake_min || '-') + ' min</td><td>' + eff + '%</td></tr>'; }).join('') +
+  table.innerHTML = '<tr><th>Date</th><th>Time</th><th>Deep</th><th>Light</th><th>REM</th><th>Awake</th><th>Eff</th></tr><tbody>' +
+    sleeps.map(s => { const eff = getEff(s); return '<tr><td>' + (s.date || '–') + '</td><td>' + fmtDuration((s.duration_min || 0) * 60) + '</td><td>' + (s.deep_sleep_pct != null ? s.deep_sleep_pct + '%' : '–') + '</td><td>' + (s.light_sleep_pct != null ? s.light_sleep_pct + '%' : '–') + '</td><td>' + (s.rem_sleep_pct != null ? s.rem_sleep_pct + '%' : '–') + '</td><td>' + (s.awake_min != null ? s.awake_min + 'm' : '–') + '</td><td>' + eff + '%</td></tr>'; }).join('') +
     '</tbody>';
-  const wrap = el('div'); wrap.style.overflowX = 'auto'; wrap.appendChild(table);
+  const wrap = el('div', 'overflow-x'); wrap.appendChild(table);
   sect2.appendChild(wrap);
   main.appendChild(sect2);
 }
@@ -461,42 +435,41 @@ function renderSleep(main) {
 // ===== RECOVERY =====
 function renderRecovery(main) {
   const sleeps = corosData.sleep || [];
-  main.appendChild(el('div', 'header', '<div><h2>Recovery</h2><div class="breadcrumb">Recovery Analysis</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Recovery</h2><div class="breadcrumb">Recovery Analysis</div>'));
 
-  // Use API/data.json analysis data if available
   const score = analysisData && analysisData.recovery_score ? analysisData.recovery_score : null;
 
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">❤️</span>Recovery Score'));
 
   if (score) {
-    const bandColor = score.band === 'green' ? '#10b981' : score.band === 'yellow' ? '#f59e0b' : '#e94560';
-    sect.innerHTML += '<div style="text-align:center;padding:20px"><div style="font-size:48px;font-weight:800;color:' + bandColor + '">' + fmtNum(score.recovery_score) + '</div><div style="font-size:13px;color:var(--muted);margin-top:4px">/100 — ' + score.band + '</div></div>';
+    const bandColor = score.band === 'green' ? 'var(--good)' : score.band === 'yellow' ? 'var(--signal)' : 'var(--bad)';
+    sect.innerHTML += '<div style="text-align:center;padding:14px 0 20px"><div class="num" style="font-size:44px;font-weight:600;color:' + bandColor + '">' + fmtNum(score.recovery_score) + '</div><div style="font-size:12px;color:var(--text-faint);margin-top:4px">/100 — ' + score.band + '</div></div>';
 
     if (score.components) {
       const comp = score.components;
       const grid = el('div', 'grid-2');
-      grid.appendChild(el('div', 'section', '<h3>❤️ HRV Score</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.hrv_score) + '</div><div style="font-size:11px;color:var(--muted)">Weight 30%</div>'));
-      grid.appendChild(el('div', 'section', '<h3>💓 RHR Score</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.rhr_score) + '</div><div style="font-size:11px;color:var(--muted)">Weight 20%</div>'));
-      grid.appendChild(el('div', 'section', '<h3>😴 Sleep Perf</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.sleep_performance) + '</div><div style="font-size:11px;color:var(--muted)">Weight 25%</div>'));
-      grid.appendChild(el('div', 'section', '<h3>🛏️ Sleep Eff</h3><div style="font-size:24px;font-weight:700">' + fmtNum(comp.sleep_efficiency) + '</div><div style="font-size:11px;color:var(--muted)">Weight 15%</div>'));
+      grid.innerHTML =
+        '<div class="g-cell"><h4>HRV · 30%</h4><div class="g-val">' + fmtNum(comp.hrv_score) + '</div></div>' +
+        '<div class="g-cell"><h4>RHR · 20%</h4><div class="g-val">' + fmtNum(comp.rhr_score) + '</div></div>' +
+        '<div class="g-cell"><h4>SLEEP PERF · 25%</h4><div class="g-val">' + fmtNum(comp.sleep_performance) + '</div></div>' +
+        '<div class="g-cell"><h4>SLEEP EFF · 15%</h4><div class="g-val">' + fmtNum(comp.sleep_efficiency) + '</div></div>';
       sect.appendChild(grid);
     }
 
     if (score.penalty_applied > 0) {
-      sect.innerHTML += '<div style="margin-top:12px;font-size:12px;color:var(--muted)">Penalty: ' + fmtNum(score.penalty_applied);
-      if (score.training_load_penalty > 0) sect.innerHTML += ' | Training Load: ' + fmtNum(score.training_load_penalty);
-      if (score.resp_rate_trend_penalty > 0) sect.innerHTML += ' | Resp Trend: ' + fmtNum(score.resp_rate_trend_penalty);
-      sect.innerHTML += '</div>';
+      let p = '<div style="margin-top:14px;font-size:12px;color:var(--text-faint)">Penalty: <span class="num">' + fmtNum(score.penalty_applied) + '</span>';
+      if (score.training_load_penalty > 0) p += ' · Load: <span class="num">' + fmtNum(score.training_load_penalty) + '</span>';
+      if (score.resp_rate_trend_penalty > 0) p += ' · Resp: <span class="num">' + fmtNum(score.resp_rate_trend_penalty) + '</span>';
+      p += '</div>';
+      sect.innerHTML += p;
     }
   } else {
-    // Fallback
     const avgHrv = sleeps.filter(s => s.hrv).reduce((s, x, _, a) => s + x.hrv / a.length, 0);
-    const avgRhr = sleeps.filter(s => s.resting_hr).reduce((s, x, _, a) => s + x.resting_hr / a.length, 0);
     const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
     const fscore = Math.round(avgEff * 0.6 + (avgHrv > 0 ? 30 : 20));
     const fband = fscore >= 80 ? 'good' : fscore >= 60 ? 'moderate' : 'low';
-    sect.innerHTML += '<div style="text-align:center;padding:20px"><div style="font-size:48px;font-weight:800;color:#10b981">' + fscore + '</div><div style="font-size:13px;color:var(--muted);margin-top:4px">/100 — ' + fband + '</div></div>';
+    sect.innerHTML += '<div style="text-align:center;padding:14px 0"><div class="num" style="font-size:44px;font-weight:600;color:var(--good)">' + fscore + '</div><div style="font-size:12px;color:var(--text-faint);margin-top:4px">/100 — ' + fband + '</div></div>';
   }
 
   main.appendChild(sect);
@@ -504,31 +477,30 @@ function renderRecovery(main) {
 
 // ===== BREATHING =====
 function renderBreathing(main) {
-  main.appendChild(el('div', 'header', '<div><h2>Breathing</h2><div class="breadcrumb">Respiratory Analysis</div></div>'));
-
+  main.appendChild(el('div', 'header', '<h2>Breathing</h2><div class="breadcrumb">Respiratory Analysis</div>'));
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">🫁</span>Breathing Metrics'));
-  sect.innerHTML += '<div class="empty"><div style="font-size:32px;margin-bottom:8px">🫁</div><p>Connect COROS wellness check to see SpO2 and respiratory rate</p></div>';
+  sect.innerHTML += '<div class="empty"><div class="e-icon">🫁</div><p>เชื่อมต่อ COROS wellness check เพื่อดู SpO2 และ respiratory rate</p></div>';
   main.appendChild(sect);
 }
 
 // ===== JOURNAL =====
 function renderJournal(main) {
-  main.appendChild(el('div', 'header', '<div><h2>Journal</h2><div class="breadcrumb">Sleep Factors / Correlation</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Journal</h2><div class="breadcrumb">Sleep Factors / Correlation</div>'));
 
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">📝</span>Daily Journal'));
 
   const form = el('div');
-  form.innerHTML = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:12px">' +
-    '<div><label style="font-size:11px;color:var(--muted)">Date</label><input type="date" id="jDate" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
-    '<div><label style="font-size:11px;color:var(--muted)">Alcohol (units)</label><input type="number" id="jAlcohol" min="0" max="10" value="0" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
-    '<div><label style="font-size:11px;color:var(--muted)">Caffeine after 14:00</label><select id="jCaffeine" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"><option value="false">No</option><option value="true">Yes</option></select></div>' +
-    '<div><label style="font-size:11px;color:var(--muted)">Late meal</label><select id="jLateMeal" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"><option value="false">No</option><option value="true">Yes</option></select></div>' +
-    '<div><label style="font-size:11px;color:var(--muted)">Screen before bed (min)</label><input type="number" id="jScreen" min="0" max="180" value="0" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
-    '<div><label style="font-size:11px;color:var(--muted)">Stress (1-5)</label><input type="number" id="jStress" min="1" max="5" value="3" style="width:100%;padding:6px;border:1px solid var(--border);border-radius:4px"></div>' +
+  form.innerHTML = '<div class="field-grid">' +
+    '<div class="field"><label>Date</label><input type="date" id="jDate"></div>' +
+    '<div class="field"><label>Alcohol (units)</label><input type="number" id="jAlcohol" min="0" max="10" value="0"></div>' +
+    '<div class="field"><label>Caffeine after 14:00</label><select id="jCaffeine"><option value="false">No</option><option value="true">Yes</option></select></div>' +
+    '<div class="field"><label>Late meal</label><select id="jLateMeal"><option value="false">No</option><option value="true">Yes</option></select></div>' +
+    '<div class="field"><label>Screen before bed (min)</label><input type="number" id="jScreen" min="0" max="180" value="0"></div>' +
+    '<div class="field"><label>Stress (1-5)</label><input type="number" id="jStress" min="1" max="5" value="3"></div>' +
     '</div>' +
-    '<button onclick="saveJournal()" style="background:var(--accent);color:#fff;border:none;padding:8px 16px;border-radius:4px;cursor:pointer">Save Entry</button>';
+    '<button class="btn-primary" onclick="saveJournal()">Save Entry</button>';
   sect.appendChild(form);
   main.appendChild(sect);
   document.getElementById('jDate').value = new Date().toISOString().split('T')[0];
@@ -544,10 +516,7 @@ async function saveJournal() {
     stress_level: parseInt(document.getElementById('jStress').value) || 3
   };
 
-  if (!entry.date) {
-    alert('กรุณาเลือกวันที่ก่อนบันทึก');
-    return;
-  }
+  if (!entry.date) { alert('กรุณาเลือกวันที่ก่อนบันทึก'); return; }
 
   try {
     const res = await fetch('/api/journal', {
@@ -574,12 +543,12 @@ async function saveJournal() {
 // ===== ACTIVITIES =====
 function renderActivities(main) {
   const acts = corosData.activities || [];
-  main.appendChild(el('div', 'header', '<div><h2>Activities</h2><div class="breadcrumb">Training / Activities</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Activities</h2><div class="breadcrumb">Training / Activities</div>'));
 
   const sect = el('div', 'section');
   sect.appendChild(el('h3', null, '<span class="sect-icon">🏃</span>All Activities'));
   if (acts.length === 0) {
-    sect.appendChild(el('div', 'empty', '<p>No activities yet</p>'));
+    sect.appendChild(el('div', 'empty', '<div class="e-icon">🏃</div><p>ยังไม่มีข้อมูลกิจกรรม</p>'));
   } else {
     sect.appendChild(renderActTable(acts));
   }
@@ -591,36 +560,34 @@ function renderWeekly(main) {
   const sleeps = corosData.sleep || [];
   const daily = corosData.daily || [];
 
-  main.appendChild(el('div', 'header', '<div><h2>Weekly Report</h2><div class="breadcrumb">Auto-generated Summary</div></div>'));
+  main.appendChild(el('div', 'header', '<h2>Weekly Report</h2><div class="breadcrumb">Auto-generated Summary</div>'));
 
-  // Use weekly_narrative from analysisData if available
   if (analysisData && analysisData.weekly_narrative) {
     const wn = analysisData.weekly_narrative;
     const sect = el('div', 'section');
     sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>สรุปสัปดาห์นี้'));
 
-    let html = '<div style="font-size:13.5px;line-height:1.7">';
-    if (wn.overview) html += '<p><strong>' + wn.overview + '</strong></p>';
+    let html = '<div style="font-size:13.5px;line-height:1.75;color:var(--text-dim)">';
+    if (wn.overview) html += '<p style="color:var(--text);font-weight:500">' + wn.overview + '</p>';
     if (wn.training_trends && wn.training_trends.strain_avg) {
-      html += '<p>📈 Training Load เฉลี่ย ' + wn.training_trends.strain_avg + '/21 — ' + wn.training_trends.strain_change + '%</p>';
+      html += '<p style="margin-top:10px"><strong style="color:var(--text)">Training Load — </strong><span class="num">' + wn.training_trends.strain_avg + '/21</span> (' + wn.training_trends.strain_change + '%)</p>';
     }
-    if (wn.fitness) html += '<p>💪 ' + wn.fitness + '</p>';
-    if (wn.economy) html += '<p>🏃 ' + wn.economy + '</p>';
+    if (wn.fitness) html += '<p style="margin-top:6px">' + wn.fitness + '</p>';
+    if (wn.economy) html += '<p style="margin-top:6px">' + wn.economy + '</p>';
     if (wn.insights && wn.insights.length > 0) {
-      html += '<p><strong>🔍 Insights:</strong></p><ul style="padding-left:20px">';
+      html += '<div class="action-list"><div class="al-title" style="color:var(--text)">Insights</div><ul>';
       for (const i of wn.insights) html += '<li>' + i + '</li>';
-      html += '</ul>';
+      html += '</ul></div>';
     }
     if (wn.next_week && wn.next_week.length > 0) {
-      html += '<p><strong>💡 สัปดาห์หน้า:</strong></p><ul style="padding-left:20px">';
+      html += '<div class="action-list"><div class="al-title">สัปดาห์หน้า</div><ul>';
       for (const i of wn.next_week) html += '<li>' + i + '</li>';
-      html += '</ul>';
+      html += '</ul></div>';
     }
     html += '</div>';
     sect.innerHTML += html;
     main.appendChild(sect);
   } else {
-    // Fallback
     const avgEff = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + getEff(x), 0) / sleeps.length) : 0;
     const avgDeep = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + (x.deep_sleep_pct || 0), 0) / sleeps.length) : 0;
     const avgRem = sleeps.length ? Math.round(sleeps.reduce((s, x) => s + (x.rem_sleep_pct || 0), 0) / sleeps.length) : 0;
@@ -628,13 +595,13 @@ function renderWeekly(main) {
 
     const sect = el('div', 'section');
     sect.appendChild(el('h3', null, '<span class="sect-icon">📊</span>Sleep Summary'));
-    sect.innerHTML += '<div style="white-space:pre-wrap;font-size:13px;line-height:1.6">' +
-      '📊 สรุปการนอน (' + sleeps.length + ' คืน)\n' +
-      '- Sleep Efficiency เฉลี่ย: ' + avgEff + '%\n' +
-      '- Deep Sleep เฉลี่ย: ' + avgDeep + '%\n' +
-      '- REM เฉลี่ย: ' + avgRem + '%\n' +
-      '- Total Steps: ' + totalSteps.toLocaleString() + '\n' +
-      '</div>';
+    const strip = el('div', 'stat-strip');
+    strip.innerHTML =
+      '<div class="stat"><div class="s-val">' + avgEff + '%</div><div class="s-lbl">EFF</div></div>' +
+      '<div class="stat"><div class="s-val">' + avgDeep + '%</div><div class="s-lbl">DEEP</div></div>' +
+      '<div class="stat"><div class="s-val">' + avgRem + '%</div><div class="s-lbl">REM</div></div>' +
+      '<div class="stat"><div class="s-val">' + totalSteps.toLocaleString() + '</div><div class="s-lbl">STEPS</div></div>';
+    sect.appendChild(strip);
     main.appendChild(sect);
   }
 }
