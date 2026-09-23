@@ -36,13 +36,7 @@ def get_db():
 
 @app.route("/")
 def index():
-    return send_file(os.path.join(DOCS_DIR, "index.html"))
-
-
-@app.route("/journal.html")
-def journal_page():
-    return send_file(os.path.join(DOCS_DIR, "journal.html"))
-
+    return send_file(os.path.join(DOCS_DIR, "index.html")) 
 
 @app.route("/api/data")
 def api_data():
