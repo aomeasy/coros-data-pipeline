@@ -18,22 +18,12 @@ from logging_utils import get_logger
 
 log = get_logger("coros_daily_sync")
 
-# Phase 0 hardening: retry/timeout config for the npx coros-mcp subprocess.
-# The CLI shells out to COROS's servers — transient network hiccups or a
-# slow cold-start of `npx` (which may need to download the package) should
-# not fail an entire morning's sync on the first hiccup.
 SUBPROCESS_TIMEOUT_S = 60
 MAX_RETRIES = 3
-RETRY_BACKOFF_S = 5  # multiplied by attempt number (5s, 10s, 15s...)
+RETRY_BACKOFF_S = 5
 
 
 def _run(*args, stdin_input=None, timeout=SUBPROCESS_TIMEOUT_S, retries=MAX_RETRIES):
-    """Run `npx coros-mcp <args>` with a timeout and retry/backoff.
-
-    Returns an object with .returncode/.stdout/.stderr, same shape as
-    subprocess.run's result, even on timeout (returncode=-1) so callers
-    don't need to special-case exceptions.
-    """
     cmd = ["npx", "coros-mcp"] + list(args)
     last_result = None
     for attempt in range(1, retries + 1):
@@ -90,7 +80,6 @@ def login(email, password):
 
 
 def call_tool_text(tool_name, args):
-    """เรียก tool และคืน text response"""
     raw = _run("call-tool", "--tool", tool_name,
                "--arguments-json", json.dumps(args))
     if raw.returncode != 0:
@@ -99,16 +88,15 @@ def call_tool_text(tool_name, args):
         resp = json.loads(raw.stdout)
     except json.JSONDecodeError:
         return False, f"Invalid JSON: {raw.stdout[:500]}", None
-    
+
     if resp.get("isError"):
         content = resp.get("content", [])
         texts = [c.get("text","") for c in content if isinstance(c, dict)]
         return False, f"Tool error: {' '.join(texts)[:500]}", None
-    
+
     content = resp.get("content", [])
     texts = [c.get("text","") for c in content if isinstance(c, dict)]
     combined = "\n".join(texts)
-    # Unescape
     combined = combined.replace('\\n', '\n').replace('\\"', '"')
     if combined.startswith('"') and combined.endswith('"'):
         combined = combined[1:-1]
@@ -116,17 +104,14 @@ def call_tool_text(tool_name, args):
 
 
 def parse_duration(s):
-    """แปลง '29:27' หรือ '1h 10min' เป็นวินาที"""
     if not s:
         return 0
     s = s.strip()
-    # 1h 10min format
     m = re.match(r'(?:(\d+)h\s*)?(\d+)min', s)
     if m:
         h = int(m.group(1) or 0)
         mi = int(m.group(2))
         return h * 3600 + mi * 60
-    # 29:27 format
     parts = s.split(":")
     if len(parts) == 2:
         return int(parts[0]) * 60 + int(parts[1])
@@ -136,7 +121,6 @@ def parse_duration(s):
 
 
 def parse_hm(s):
-    """แปลง '1h 0min' เป็นนาที"""
     if not s:
         return 0
     s = s.strip()
@@ -149,7 +133,6 @@ def parse_hm(s):
 
 
 def parse_pace_to_seconds(s):
-    """แปลง '8:18 /km' เป็นวินาที"""
     if not s:
         return None
     m = re.search(r'(\d+):(\d+)', s)
@@ -178,26 +161,23 @@ def sync_activities():
         return False, msg
     if not text:
         return False, "Empty response"
-    
+
     print(f"  Raw preview: {text[:300]}")
-    
-    # Parse sport records
+
     count = 0
     rejected = 0
-    # Split by numbered entries
     entries = re.split(r'\n\d+\.\s+', text)
-    for entry in entries[1:]:  # skip header
+    for entry in entries[1:]:
         lines = [l.strip() for l in entry.strip().split('\n') if l.strip()]
         if not lines:
             continue
-        
-        # First line: "Outdoor Run — 2026-09-16"
+
         sport_type = "running"
         date_str = ""
         m = re.match(r'.*—\s*(\d{4}-\d{2}-\d{2})', lines[0])
         if m:
             date_str = m.group(1).replace("-", "")
-        
+
         activity = {
             "activityId": "",
             "sportType": 100,
@@ -213,18 +193,16 @@ def sync_activities():
             "descent": 0,
             "averageCadence": None,
         }
-        
+
         full_text = " ".join(lines)
-        
-        # LabelId → activity_id (required)
+
         m = re.search(r'LabelId:\s*(\d+)', full_text)
         if m:
             activity["activityId"] = m.group(1)
         m = re.search(r'SportType:\s*(\d+)', full_text)
         if m:
             activity["sportType"] = int(m.group(1))
-        
-        # Duration and Distance — "Duration: 29:27 | Distance: 3.55 km"
+
         m = re.search(r'Duration:\s*([\d:]+)\s*\|\s*Distance:\s*([\d.]+)\s*km', full_text)
         if m:
             dur_str = m.group(1)
@@ -234,28 +212,24 @@ def sync_activities():
             elif len(parts) == 3:
                 activity["duration"] = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
             activity["distance"] = float(m.group(2)) * 1000
-        
-        # Pace
+
         m = re.search(r'Average Pace:\s*([\d:]+\s*/km)', full_text)
         if m:
             activity["averagePace"] = parse_pace_to_seconds(m.group(1))
-        
-        # HR
+
         m = re.search(r'Avg HR:\s*(\d+)\s*bpm', full_text)
         if m:
             activity["averageHeartRate"] = int(m.group(1))
-        
-        # Calories
+
         m = re.search(r'Calories:\s*(\d+)\s*kcal', full_text)
         if m:
             activity["caloriesBurned"] = int(m.group(1))
-        
-        # Timestamps
+
         m = re.search(r'startTimestamp=(\d+)', full_text)
         if m:
             ts = int(m.group(1))
             activity["startTime"] = datetime.fromtimestamp(ts).isoformat()
-        
+
         if coros_db.store_activity(activity):
             count += 1
         else:
@@ -272,20 +246,15 @@ def sync_sleep_and_health(days=7):
         return False, msg
     if not text:
         return False, "Empty response"
-    
+
     print(f"  Raw preview: {text[:300]}")
-    
+
     sleep_count = 0
     daily_count = 0
     sleep_rejected = 0
     daily_rejected = 0
 
-    # Split by date sections
     sections = re.split(r'---\s*(\d{4}\d{2}\d{2})\s*---', text)
-    # sections[0] is the report header — NOT a date section, but it carries
-    # report-wide baseline values (e.g. "Resting HR: 50 bpm | HRV Baseline: 42 ms")
-    # that used to be silently discarded. Parse them here so every day in this
-    # sync at least gets a value instead of permanent NULL.
     header = sections[0] if sections else ""
 
     baseline_resting_hr = None
@@ -301,71 +270,79 @@ def sync_sleep_and_health(days=7):
     if baseline_resting_hr is not None or baseline_hrv is not None:
         print(f"  Header baseline → Resting HR: {baseline_resting_hr} bpm, HRV: {baseline_hrv} ms")
 
-    # sections[0] is header, then alternating date/date_content
+    today_str = datetime.now().strftime("%Y%m%d")
+
     i = 1
     while i < len(sections) - 1:
         date_str = sections[i]
         content = sections[i + 1]
         i += 2
-        
+
         sleep_rec = {"date": date_str}
         daily_rec = {"date": date_str}
-        
-        # Steps
+
         m = re.search(r'Steps:\s*([\d,]+)', content)
         if m:
             daily_rec["steps"] = int(m.group(1).replace(",", ""))
-        
-        # Calories
+
         m = re.search(r'Calories:\s*(\d+)\s*kcal', content)
         if m:
             daily_rec["caloriesBurned"] = int(m.group(1))
-        
-        # Stress
+
         m = re.search(r'Stress:\s*Avg\s*(\d+)', content)
         if m:
             daily_rec["stressLevel"] = int(m.group(1))
-        
-        # Sleep data
+
         if "Sleep Summary:" in content:
             sleep_section = content.split("Sleep Summary:")[1]
-            
+
             m = re.search(r'Total:\s*([\d+h\s]+\d+min)', sleep_section)
             if m:
                 sleep_rec["duration"] = parse_hm(m.group(1))
-            
+
             m = re.search(r'Deep:\s*([\d+h\s]+\d+min)', sleep_section)
             if m:
                 deep_min = parse_hm(m.group(1))
                 if sleep_rec.get("duration", 0) > 0:
                     sleep_rec["deepSleepRatio"] = round(deep_min / sleep_rec["duration"] * 100, 1)
-            
+
             m = re.search(r'Light:\s*([\d+h\s]+\d+min)', sleep_section)
             if m:
                 light_min = parse_hm(m.group(1))
                 if sleep_rec.get("duration", 0) > 0:
                     sleep_rec["lightSleepRatio"] = round(light_min / sleep_rec["duration"] * 100, 1)
-            
+
             m = re.search(r'REM:\s*([\d+h\s]+\d+min)', sleep_section)
             if m:
                 rem_min = parse_hm(m.group(1))
                 if sleep_rec.get("duration", 0) > 0:
                     sleep_rec["remSleepRatio"] = round(rem_min / sleep_rec["duration"] * 100, 1)
-            
+
             m = re.search(r'Awake:\s*(\d+)\s*min', sleep_section)
             if m:
                 sleep_rec["awakeDuration"] = int(m.group(1))
 
-        # HRV / Resting HR / Sleep Score — try per-day value first (in case
-        # COROS ever includes it inside a day's block), then fall back to the
-        # report-wide baseline parsed from the header above. Without this,
-        # these three fields were ALWAYS None/NULL regardless of how many
-        # times the sync ran.
+        # Phase 0.x fix: only fall back to the report-wide baseline for
+        # TODAY's record. Every earlier date in this sync window used to
+        # silently receive the SAME baseline value, making HRV/RHR look
+        # flat across days that never actually shared that value.
+        is_latest_day = (date_str == today_str)
+
         m = re.search(r'HRV:\s*(\d+)\s*ms', content)
-        sleep_rec["hrv"] = int(m.group(1)) if m else baseline_hrv
+        if m:
+            sleep_rec["hrv"] = int(m.group(1))
+        elif is_latest_day:
+            sleep_rec["hrv"] = baseline_hrv
+        else:
+            sleep_rec["hrv"] = None
 
         m = re.search(r'Resting HR:\s*(\d+)\s*bpm', content)
-        sleep_rec["restingHeartRate"] = int(m.group(1)) if m else baseline_resting_hr
+        if m:
+            sleep_rec["restingHeartRate"] = int(m.group(1))
+        elif is_latest_day:
+            sleep_rec["restingHeartRate"] = baseline_resting_hr
+        else:
+            sleep_rec["restingHeartRate"] = None
 
         m = re.search(r'Sleep Score:\s*(\d+)', content)
         if m:
@@ -408,10 +385,6 @@ def main():
         return 1
     log.info("login_ok", detail=out[:200])
 
-    # Phase 0: each sync step is isolated so a bug/exception in one (e.g.
-    # a new COROS response format breaking the activities regex) doesn't
-    # take down the other. Both are attempted; overall exit code reflects
-    # whether *any* step failed so CI/Actions still surfaces a red run.
     had_failure = False
 
     try:
