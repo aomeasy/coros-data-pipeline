@@ -84,10 +84,39 @@ canvas{max-width:100%}
 .ring-status-text.status-yellow{color:var(--status-yellow)}
 .ring-status-text.status-red{color:var(--status-red)}
 
+/* ===== Triple-ring row (Recovery big + Sleep/Strain mini, Whoop-style) ===== */
+.triple-ring-row{display:flex;justify-content:center;gap:20px;margin-top:18px;flex-wrap:wrap}
+.mini-ring-wrap{position:relative;width:92px;height:92px}
+.mini-ring-wrap svg{transform:rotate(-90deg)}
+.mini-ring-track{fill:none;stroke:var(--card-elevated);stroke-width:8}
+.mini-ring-progress{fill:none;stroke-width:8;stroke-linecap:round;transition:stroke-dasharray 0.6s ease, stroke 0.6s ease}
+.mini-ring-progress.status-green{stroke:var(--status-green)}
+.mini-ring-progress.status-yellow{stroke:var(--status-yellow)}
+.mini-ring-progress.status-red{stroke:var(--status-red)}
+.mini-ring-progress.status-empty{stroke:var(--border)}
+.mini-ring-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
+.mini-ring-center .pct{font-size:17px;font-weight:800;line-height:1}
+.mini-ring-item{text-align:center}
+.mini-ring-item .lbl{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:6px}
+
+/* ===== Activity summary card (merged distance/pace/etc with context) ===== */
+.activity-card{background:var(--card-elevated);border-radius:10px;padding:16px;margin-top:4px}
+.activity-card .a-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.activity-card .a-sport{font-size:13px;font-weight:700}
+.activity-card .a-date{font-size:11px;color:var(--muted)}
+.activity-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(80px,1fr));gap:10px}
+.activity-stats .a-stat .a-val{font-size:16px;font-weight:700}
+.activity-stats .a-stat .a-lbl{font-size:10px;color:var(--muted);text-transform:uppercase}
+
 /* metric value color coding (used by card()/statusClass helpers in app.js) */
 .val.status-green{color:var(--status-green)}
 .val.status-yellow{color:var(--status-yellow)}
 .val.status-red{color:var(--status-red)}
+
+/* narrative inline severity coloring (used by colorizeNarrative() in app.js) */
+.tag-good{color:var(--status-green);font-weight:600}
+.tag-warn{color:var(--status-yellow);font-weight:600}
+.tag-bad{color:var(--status-red);font-weight:600}
 </style>
 </head>
 <body>
