@@ -133,6 +133,16 @@ def api_analysis():
     for rec in sleep_for_analysis:
         eff = sleep_analysis.sleep_efficiency(rec)
         stages = sleep_analysis.stage_percentages(rec)
+
+        # BUGFIX: eff เดิมคำนวณแล้วใส่ไว้แค่ใน sleep_metrics (สำหรับตาราง Sleep History)
+        # แต่ไม่เคยใส่กลับเข้า `rec` (sleep_for_analysis) เลย ทั้งที่ sleep_for_analysis
+        # คือตัวที่ถูกส่งต่อไปยัง narrative_engine.generate_weekly_digest() เป็น
+        # sleep_records — ฟังก์ชันนั้นอ่านหา key "efficiency"/"sleep_efficiency" ซึ่งไม่มีอยู่
+        # เลยได้ default 0 เสมอ -> weekly_narrative.sleep_trends.efficiency_avg = 0.0%
+        # ทั้งที่ Sleep Efficiency จริงอยู่ราว 80-95% ทุกคืน
+        rec["efficiency"] = eff
+        rec["sleep_efficiency"] = eff
+
         sleep_metrics.append({
             "date": rec["date"],
             "efficiency": eff,
