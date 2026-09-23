@@ -344,9 +344,32 @@ def export():
     # แต่ไม่ persist ลง DB เพราะ export.py เป็น one-shot script ต่อรอบ sync
     # อยู่แล้ว ไม่จำเป็นต้อง cache ข้าม process)
     # ---------------------------------------------------------------
-    strain_ascending = strain_engine.compute_strain_for_all_days(
+    strain_raw = strain_engine.compute_strain_for_all_days(
         acts_out, sleep_for_analysis
     )  # strain_engine คืนค่าเรียงเก่า->ใหม่ (ดู docstring ของมันเอง)
+
+    # BUGFIX: strain_engine คืน key ชื่อ "strain" (ไม่ใช่ "day_strain") และ "acwr"
+    # เป็น dict ทั้งก้อน (acwr/acute_avg/chronic_avg/confidence/risk) ไม่ใช่ตัวเลข
+    # เดี่ยวๆ — เหมือนบั๊กที่ app.py เจอตอนจะเขียนลง daily_strain table เป๊ะ (ดู
+    # comment ใน _compute_and_store_strain() ของ app.py) แต่ app.py แก้ปัญหานี้
+    # ทางอ้อมด้วยการเขียนลง DB แล้วอ่านกลับ (ตาราง daily_strain เก็บ acwr เป็น
+    # column REAL เดี่ยวๆ อยู่แล้ว บังคับให้แบนราบอัตโนมัติ) ส่วน export.py ไม่ได้
+    # ผ่าน DB round-trip แบบนั้น (ตั้งใจให้เป็น one-shot ไม่ persist) เลยส่ง acwr
+    # เป็น dict ดิบๆ ตรงเข้า sleep_analysis.detect_overtraining() ทำให้พังด้วย
+    # TypeError: '>' not supported between instances of 'dict' and 'float'
+    # และถ้าไม่แก้ key "strain"->"day_strain" ด้วย narrative_engine จะอ่านไม่เจอ
+    # แล้วโชว์ Strain เป็น 0 เงียบๆ แทนที่จะ error ให้เห็น
+    strain_ascending = []
+    for s in strain_raw:
+        acwr_result = s.get("acwr") or {}
+        strain_ascending.append({
+            "date": s.get("date"),
+            "trimp": s.get("trimp"),
+            "day_strain": s.get("strain"),
+            "acwr": acwr_result.get("acwr"),
+            "acwr_risk": acwr_result.get("risk"),
+            "acwr_confidence": acwr_result.get("confidence"),
+        })
 
     # compute_full_analysis() (ด้านล่าง) เขียนมาโดยอ้างอิง strain_series[0] เป็น
     # "วันล่าสุด" (training_load_prev_day) และ strain_series[:3] เป็น "3 วัน
