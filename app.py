@@ -178,7 +178,7 @@ def api_analysis():
     # Strain 3 วัน (สำหรับ sleep need)
     strain_3day = []
     if strain_series:
-        for s in strain_series[-3:]:
+        for s in strain_series[:3]:   # DESC order → 3 ตัวแรก = 3 วันล่าสุด
             if s.get("trimp"):
                 strain_3day.append(s["trimp"])
 
