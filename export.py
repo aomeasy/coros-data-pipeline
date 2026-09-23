@@ -234,17 +234,11 @@ def export():
     journals = [dict(r) for r in conn.execute(
         "SELECT * FROM journal_entries ORDER BY date DESC LIMIT 30"
     )]
-
-    # Get strain series
-    strain_records = [dict(r) for r in conn.execute(
-        "SELECT * FROM daily_strain ORDER BY date DESC LIMIT 30"
-    )]
     conn.close()
 
     # Reverse to chronological order for analysis
     sleep_chronological = list(reversed(sleep))
     daily_chronological = list(reversed(daily))
-    strain_chronological = list(reversed(strain_records))
 
     # Normalize sleep records for analysis
     sleep_for_analysis = []
@@ -329,9 +323,37 @@ def export():
     # Compute aggregated metrics
     metrics = compute_metrics(sleep_out, daily_out)
 
+    # ---------------------------------------------------------------
+    # Strain — คำนวณสดตรงนี้ ไม่อ่านจากตาราง daily_strain
+    #
+    # BUGFIX: เดิม export.py import strain_engine ไว้เฉยๆ แต่ไม่เคยเรียก
+    # compute_strain_for_all_days() เลย — มีแต่ SELECT * FROM daily_strain
+    # ซึ่งตารางนี้จะมีข้อมูลก็ต่อเมื่อมีคนเรียก /api/analysis ผ่าน app.py
+    # (Flask) เท่านั้น แต่ GitHub Actions รัน export.py ตรงๆ ไม่เคยรัน Flask
+    # เลย ตาราง daily_strain เลยว่างตลอดบน GitHub Pages ผลคือ
+    # weekly_narrative/daily narrative ส่วน "การซ้อม" ขึ้น "ไม่มีข้อมูลการซ้อม"
+    # ตลอดเวลา และ latest_strain เป็น None เสมอ ทั้งที่มี activities จริง
+    #
+    # แก้โดยคำนวณ strain สดจาก acts_out + sleep_for_analysis ที่มีอยู่แล้ว
+    # ในตัว export.py เอง (เหมือนที่ app.py ทำใน _compute_and_store_strain
+    # แต่ไม่ persist ลง DB เพราะ export.py เป็น one-shot script ต่อรอบ sync
+    # อยู่แล้ว ไม่จำเป็นต้อง cache ข้าม process)
+    # ---------------------------------------------------------------
+    strain_ascending = strain_engine.compute_strain_for_all_days(
+        acts_out, sleep_for_analysis
+    )  # strain_engine คืนค่าเรียงเก่า->ใหม่ (ดู docstring ของมันเอง)
+
+    # compute_full_analysis() (ด้านล่าง) เขียนมาโดยอ้างอิง strain_series[0] เป็น
+    # "วันล่าสุด" (training_load_prev_day) และ strain_series[-3:] เป็น "3 วัน
+    # ล่าสุด" — ตรงกับ convention เดียวกับ app.py ที่ strain_series มาจาก
+    # coros_db.get_recent_daily_strain() ซึ่งเรียง DESC (ล่าสุดก่อน) ต้อง reverse
+    # ให้ตรงกันก่อนส่งเข้าไป ไม่งั้นจะเอาวันที่เก่าที่สุดไปตีความเป็น "เมื่อวาน"
+    strain_series = list(reversed(strain_ascending))  # ล่าสุด -> เก่า
+    latest_strain = strain_series[0] if strain_series else None
+
     # Compute full analysis for narrative
     analysis = compute_full_analysis(
-        sleep_for_analysis, daily_chronological, acts_out, journals_out, strain_chronological
+        sleep_for_analysis, daily_chronological, acts_out, journals_out, strain_series
     )
 
     data = {
@@ -340,12 +362,11 @@ def export():
         "daily": daily_out,
         "journals": journals_out,
         "computed_metrics": metrics,
-        # เพิ่ม: app.js เช็ค analysisData.latest_strain / .daily_strain สำหรับ
-        # Strain card บน dashboard — เดิม export.py ไม่เคยใส่ 2 key นี้ลง data.json
-        # เลย ทำให้ Strain card ไม่มีวันขึ้นบน GitHub Pages (static host ไม่มี
-        # /api/analysis ให้ fallback ไปดึงจากที่อื่น)
-        "daily_strain": strain_records,
-        "latest_strain": strain_records[0] if strain_records else None,
+        # app.js เช็ค analysisData.latest_strain / .daily_strain สำหรับ Strain
+        # card บน dashboard — มาจาก strain ที่คำนวณสดด้านบน (ไม่ใช่จากตาราง
+        # daily_strain ที่มักว่างเปล่าบน GitHub Pages ตามที่อธิบายไว้ข้างบน)
+        "daily_strain": list(reversed(strain_chronological)),  # ใหม่ -> เก่า เพื่อให้ [0] = ล่าสุด
+        "latest_strain": latest_strain,
         "stats": {
             "activities_count": len(acts_out),
             "sleep_count": len(sleep_out),
