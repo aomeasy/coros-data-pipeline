@@ -147,14 +147,14 @@ def sync_activities():
     args = {
         "startDate": start_date,
         "endDate": end_date,
-        "sportTypeCodes": [100, 101, 102, 103],
+        "sportTypeCodes": None,
         "minDistanceKm": None,
         "maxDistanceKm": None,
         "minDurationMinutes": None,
         "maxDurationMinutes": None,
         "maxAveragePace": None,
         "locationKeyword": None,
-        "limit": 20,
+        "limit": 50,
     }
     ok, msg, text = call_tool_text("querySportRecords", args)
     if not ok:
