@@ -67,6 +67,7 @@ canvas{max-width:100%}
 .gauge-wrap{text-align:center;padding:16px}
 .gauge-needle{width:4px;height:60px;background:var(--accent);position:absolute;left:50%;bottom:0;transform-origin:bottom center;transition:transform 0.5s}
 
+/* ===== Recovery Ring (Whoop-style) ===== */
 .recovery-ring-section{text-align:center;padding:24px 16px;margin-bottom:20px}
 .ring-wrap{position:relative;width:180px;height:180px;margin:0 auto}
 .ring-wrap svg{transform:rotate(-90deg)}
@@ -78,18 +79,15 @@ canvas{max-width:100%}
 .ring-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
 .ring-center .pct{font-size:36px;font-weight:800;line-height:1}
 .ring-center .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-top:4px}
-.ring-status-text{font-size:13px;font-weight:600;margin-top:12px}
+.ring-status-text{font-size:13px;font-weight:600;margin-top:12px;letter-spacing:1px}
 .ring-status-text.status-green{color:var(--status-green)}
 .ring-status-text.status-yellow{color:var(--status-yellow)}
 .ring-status-text.status-red{color:var(--status-red)}
 
-/* metric value color coding */
+/* metric value color coding (used by card()/statusClass helpers in app.js) */
 .val.status-green{color:var(--status-green)}
 .val.status-yellow{color:var(--status-yellow)}
 .val.status-red{color:var(--status-red)}
-
-
-  
 </style>
 </head>
 <body>
@@ -109,6 +107,6 @@ canvas{max-width:100%}
 <a href="#" data-page="activities"><span class="icon">🏃</span>Activities</a>
 </nav>
 <script src="app.js"></script>
-  
+
 </body>
 </html>
