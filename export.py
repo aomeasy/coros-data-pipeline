@@ -62,8 +62,9 @@ def compute_metrics(sleep_records, daily_records):
         "avg_rem_pct": avg_rem,
         "avg_duration_min": avg_duration,
         "total_steps": total_steps,
-        "recovery_score": None,
-        "sqi": None,
+        # NOTE: recovery_score / sqi ตัวจริงอยู่ใน analysis dict (top-level ของ
+        # data.json) จาก compute_full_analysis() ไม่ใช่ที่นี่ — เดิมมีสอง key นี้
+        # hardcode เป็น None อยู่ในนี้ซึ่งไม่มีใครอ่านและทำให้งงตอน debug จึงลบออก
     }
 
 
@@ -339,6 +340,12 @@ def export():
         "daily": daily_out,
         "journals": journals_out,
         "computed_metrics": metrics,
+        # เพิ่ม: app.js เช็ค analysisData.latest_strain / .daily_strain สำหรับ
+        # Strain card บน dashboard — เดิม export.py ไม่เคยใส่ 2 key นี้ลง data.json
+        # เลย ทำให้ Strain card ไม่มีวันขึ้นบน GitHub Pages (static host ไม่มี
+        # /api/analysis ให้ fallback ไปดึงจากที่อื่น)
+        "daily_strain": strain_records,
+        "latest_strain": strain_records[0] if strain_records else None,
         "stats": {
             "activities_count": len(acts_out),
             "sleep_count": len(sleep_out),
