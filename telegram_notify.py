@@ -11,15 +11,36 @@ Telegram Daily Summary Notifier
 Environment variables ที่ต้องมี:
     TELEGRAM_BOT_TOKEN  - token ของ bot (ขอจาก @BotFather)
     TELEGRAM_CHAT_ID    - chat id ปลายทางที่จะส่งข้อความไปหา
+
+การเปลี่ยนแปลงรอบนี้ (ส่วนอื่นคงเดิมทั้งหมด):
+  1. today_str()/yesterday_str() ใช้เวลา ICT (UTC+7) แทนนาฬิกา UTC ของ runner
+  2. sport_type แสดงเป็นชื่อกีฬา (รู้จักเฉพาะรหัสที่ยืนยันแล้ว — รหัสอื่นแสดงเป็น "กีฬา (รหัส N)")
+  3. ACWR: ถ้าประวัติข้อมูลยังไม่ถึง 28 วัน แสดง "ยังไม่ประเมิน (ข้อมูล X/28 วัน)"
+     แทนตัวเลขพร้อมป้ายความเสี่ยง (ประวัติสั้น ค่า ACWR ยังไม่น่าเชื่อถือ)
+  4. บรรทัด "HR เฉลี่ย/สูงสุด" ซ่อนเมื่อไม่มีข้อมูลทั้งคู่ (sync ไม่เคยเก็บค่านี้ใน daily_health)
 """
 
+import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 import coros_db
+
+# ผู้ใช้อยู่ประเทศไทย (ICT = UTC+7) แต่ GitHub Actions runner ใช้นาฬิกา UTC
+ICT = timezone(timedelta(hours=7))
+
+# ประวัติข้อมูลขั้นต่ำ (วัน) ที่ ACWR ถึงจะเชื่อถือได้ — ตรงกับ chronic window ของ strain_engine
+ACWR_MIN_HISTORY_DAYS = 28
+
+# รหัสกีฬาของ COROS -> ชื่อที่แสดง
+# ใส่เฉพาะรหัสที่ยืนยันแล้วเท่านั้น (100 = running ตามเอกสาร COROS API ที่ไม่เป็นทางการ)
+# รหัสอื่นจะแสดงเป็น "กีฬา (รหัส N)" ไม่เดา เพื่อไม่ให้แสดงชื่อผิด — เติมได้เมื่อยืนยันรหัสแล้ว
+SPORT_NAMES = {
+    "100": "วิ่ง",
+}
 
 
 # =============================================================================
@@ -27,12 +48,12 @@ import coros_db
 # =============================================================================
 
 def today_str():
-    """คืนค่าวันที่วันนี้ในรูปแบบ YYYY-MM-DD"""
-    return datetime.now().strftime("%Y-%m-%d")
+    """คืนค่าวันที่วันนี้ (เวลาไทย) ในรูปแบบ YYYY-MM-DD"""
+    return datetime.now(ICT).strftime("%Y-%m-%d")
 
 
 def yesterday_str():
-    return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    return (datetime.now(ICT) - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
 def normalize_date(raw):
@@ -104,6 +125,14 @@ def minutes_to_hm(minutes):
     return f"{m}m"
 
 
+def sport_label(code):
+    """แปลงรหัสกีฬา COROS เป็นชื่อ — รหัสที่ไม่รู้จักแสดงเป็นรหัสตรงๆ ไม่เดาชื่อ"""
+    if code is None or str(code).strip() == "":
+        return "activity"
+    key = str(code).strip()
+    return SPORT_NAMES.get(key, f"กีฬา (รหัส {key})")
+
+
 def acwr_flag(acwr):
     """ให้คำเตือนตามช่วงความเสี่ยงของ ACWR (Acute:Chronic Workload Ratio)"""
     if acwr is None:
@@ -119,6 +148,54 @@ def acwr_flag(acwr):
     if acwr < 0.8:
         return " 🔵 โหลดต่ำกว่าปกติ (detraining)"
     return " ✅ อยู่ในช่วงปลอดภัย"
+
+
+def acwr_line(acwr, history_days=None):
+    """
+    บรรทัด ACWR ในข้อความ — ถ้าประวัติข้อมูลสั้นกว่า ACWR_MIN_HISTORY_DAYS จะไม่แสดง
+    ตัวเลขและป้ายความเสี่ยง เพราะ chronic window (28 วัน) ยังไม่ครบ ค่าที่ได้ไม่น่าเชื่อถือ
+    """
+    if acwr is None:
+        return f"  ACWR: {fmt(acwr, '', 2)}"
+    if history_days is not None and history_days < ACWR_MIN_HISTORY_DAYS:
+        return f"  ACWR: ยังไม่ประเมิน (ข้อมูล {history_days}/{ACWR_MIN_HISTORY_DAYS} วัน)"
+    return f"  ACWR: {fmt(acwr, '', 2)}{acwr_flag(acwr)}"
+
+
+def _find_history_days(strain):
+    """
+    หา history_days ที่ strain_engine บันทึกไว้ใน summary_json (ถ้ามี) — ค้นแบบ recursive
+    เพราะไม่ทราบว่า run_strain.py เก็บฟิลด์นี้ไว้ระดับไหน คืน None ถ้าไม่พบ
+    """
+    try:
+        obj = json.loads(strain.get("summary_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    stack = [obj]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, dict):
+            v = cur.get("history_days")
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                return int(v)
+            stack.extend(cur.values())
+        elif isinstance(cur, list):
+            stack.extend(cur)
+    return None
+
+
+def _history_days_from_activities(activities, today):
+    """สำรอง: นับจากวันแรกที่มีกิจกรรมใน DB จนถึงวันนี้ (รวมทั้งสองวัน)"""
+    dates = [normalize_date(a.get("start_time")) for a in activities]
+    dates = [d for d in dates if d]
+    if not dates:
+        return None
+    try:
+        first = datetime.strptime(min(dates), "%Y-%m-%d")
+        last = datetime.strptime(today, "%Y-%m-%d")
+    except ValueError:
+        return None
+    return max(0, (last - first).days + 1)
 
 
 # =============================================================================
@@ -160,6 +237,12 @@ def gather_today_summary():
     # --- strain / ACWR: get_strain_by_date ใช้ exact match ต้องลองทั้งสองรูปแบบ ---
     strain_today = coros_db.get_strain_by_date(date) or coros_db.get_strain_by_date(date.replace("-", ""))
 
+    # --- ความยาวประวัติข้อมูล (ใช้ตัดสินว่า ACWR เชื่อถือได้หรือยัง) ---
+    # ใช้ค่าที่ strain_engine บันทึกไว้ก่อน ถ้าไม่มีให้นับจากวันแรกที่มีกิจกรรม
+    history_days = _find_history_days(strain_today) if strain_today else None
+    if history_days is None:
+        history_days = _history_days_from_activities(all_recent_activities, date)
+
     # --- journal (manual log): เก็บด้วยมือ ปกติจะเป็น format เดียวกันเสมอ แต่กันไว้ก่อน ---
     journal_today = coros_db.get_journal_by_date(date) or coros_db.get_journal_by_date(date.replace("-", ""))
 
@@ -170,6 +253,7 @@ def gather_today_summary():
         "health": health_today,
         "strain": strain_today,
         "journal": journal_today,
+        "history_days": history_days,
     }
 
 
@@ -192,7 +276,7 @@ def build_message(data):
         lines.append("")
         lines.append("📍 <b>กิจกรรม</b>")
         for act in activities:
-            sport = act.get("sport_type") or "activity"
+            sport = sport_label(act.get("sport_type"))
             distance_km = (act.get("distance_m") or 0) / 1000
             lines.append(
                 f"  • {sport}: {fmt(distance_km, ' km', 2)} "
@@ -211,10 +295,12 @@ def build_message(data):
         lines.append(f"  👣 ก้าว: {fmt(health.get('steps'), '', 0)}")
         lines.append(f"  🔥 แคลอรี่รวม: {fmt(health.get('calories_burned'), ' kcal', 0)}")
         lines.append(f"  😰 Stress: {fmt(health.get('stress_score'), '/100', 0)}")
-        lines.append(
-            f"  ❤️ HR เฉลี่ย/สูงสุด: {fmt(health.get('avg_hr'), '', 0)} / "
-            f"{fmt(health.get('max_hr'), '', 0)}"
-        )
+        # ซ่อนบรรทัดนี้เมื่อไม่มีข้อมูลทั้งคู่ (sync ยังไม่เคยเก็บ avg/max HR รายวัน)
+        if health.get("avg_hr") is not None or health.get("max_hr") is not None:
+            lines.append(
+                f"  ❤️ HR เฉลี่ย/สูงสุด: {fmt(health.get('avg_hr'), '', 0)} / "
+                f"{fmt(health.get('max_hr'), '', 0)}"
+            )
         if health.get("spo2_avg") is not None:
             lines.append(
                 f"  🫁 SpO2 เฉลี่ย/ต่ำสุด: {fmt(health.get('spo2_avg'), '%', 0)} / "
@@ -246,8 +332,7 @@ def build_message(data):
         lines.append("⚡ <b>Strain</b>")
         lines.append(f"  Day strain: {fmt(strain.get('day_strain'), '', 1)}")
         lines.append(f"  TRIMP: {fmt(strain.get('trimp'), '', 1)}")
-        acwr = strain.get("acwr")
-        lines.append(f"  ACWR: {fmt(acwr, '', 2)}{acwr_flag(acwr)}")
+        lines.append(acwr_line(strain.get("acwr"), data.get("history_days")))
 
     # --- Journal (manual) ---
     if journal:
