@@ -261,7 +261,12 @@ def sync_activities():
 
 
 def sync_sleep_and_health(days=7):
-    ok, msg, text = call_tool_text("queryDailyHealthData", {"days": days})
+    ok, msg, text = call_tool_text("querySleepData", {
+        "startDate": (datetime.now(ICT) - timedelta(days=14)).strftime("%Y%m%d"),
+        "endDate": datetime.now(ICT).strftime("%Y%m%d"),
+        "days": 7,
+    })
+
     if not ok:
         return False, msg
     if not text:
@@ -275,17 +280,6 @@ def sync_sleep_and_health(days=7):
     daily_rejected = 0
 
     sections = re.split(r'---\s*(\d{4}\d{2}\d{2})\s*---', text)
-    header = sections[0] if sections else ""
-
-    baseline_resting_hr = None
-    m = re.search(r'Resting HR:\s*(\d+)\s*bpm', header)
-    if m:
-        baseline_resting_hr = int(m.group(1))
-
-    baseline_hrv = None
-    m = re.search(r'HRV Baseline:\s*(\d+)\s*ms', header)
-    if m:
-        baseline_hrv = int(m.group(1))
 
     if baseline_resting_hr is not None or baseline_hrv is not None:
         print(f"  Header baseline → Resting HR: {baseline_resting_hr} bpm, HRV: {baseline_hrv} ms")
@@ -360,25 +354,40 @@ def sync_sleep_and_health(days=7):
         # is_latest_day เทียบกับวันล่าสุดที่ "มีอยู่จริงในรายงานนี้" แทนนาฬิกาเครื่อง
         is_latest_day = (latest_section_date is not None and date_str == latest_section_date)
 
-        m = re.search(r'HRV:\s*(\d+)\s*ms', content)
-        if m:
-            sleep_rec["hrv"] = int(m.group(1))
-        elif is_latest_day:
-            sleep_rec["hrv"] = baseline_hrv
-        else:
-            sleep_rec["hrv"] = None
-
-        m = re.search(r'Resting HR:\s*(\d+)\s*bpm', content)
-        if m:
-            sleep_rec["restingHeartRate"] = int(m.group(1))
-        elif is_latest_day:
-            sleep_rec["restingHeartRate"] = baseline_resting_hr
-        else:
-            sleep_rec["restingHeartRate"] = None
-
+        
+        
+        
         m = re.search(r'Sleep Score:\s*(\d+)', content)
         if m:
             sleep_rec["sleepScore"] = int(m.group(1))
+        
+        m = re.search(r'Main Sleep:\s*([\d+h\s]+\d+min)', content)
+        if m:
+            sleep_rec["duration"] = parse_duration(m.group(1))
+        
+        m = re.search(r'Deep Sleep Ratio:\s*([\d.]+)%', content)
+        if m:
+            sleep_rec["deep_sleep_pct"] = float(m.group(1))
+        
+        m = re.search(r'Light Sleep Ratio:\s*([\d.]+)%', content)
+        if m:
+            sleep_rec["light_sleep_pct"] = float(m.group(1))
+        
+        m = re.search(r'REM Ratio:\s*([\d.]+)%', content)
+        if m:
+            sleep_rec["rem_sleep_pct"] = float(m.group(1))
+        
+        m = re.search(r'Awake Time:\s*(\d+)\s*min', content)
+        if m:
+            sleep_rec["awake_min"] = int(m.group(1))
+        
+        m = re.search(r'Naps Total:\s*(\d+)\s*min', content)
+        if m:
+            sleep_rec["nap_min"] = int(m.group(1))
+        
+        m = re.search(r'HRV:\s*(\d+)\s*ms', content)
+        if m:
+            sleep_rec["hrv"] = int(m.group(1))
 
         if "Sleep Summary:" in content:
             if coros_db.store_sleep(sleep_rec):
