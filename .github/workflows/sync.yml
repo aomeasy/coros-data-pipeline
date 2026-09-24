@@ -39,7 +39,12 @@ jobs:
           COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
           PYTHONIOENCODING: utf-8
         run: python coros_daily_sync.py
-
+        
+      - name: Compute Strain / ACWR
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python run_strain.py
+        
       - name: Export to JSON
         run: python export.py
         
