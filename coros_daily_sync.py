@@ -261,11 +261,9 @@ def sync_activities():
 
 
 def sync_sleep_and_health(days=7):
-    ok, msg, text = call_tool_text("querySleepData", {
-        "startDate": (datetime.now(ICT) - timedelta(days=14)).strftime("%Y%m%d"),
-        "endDate": datetime.now(ICT).strftime("%Y%m%d"),
-        "days": 7,
-    })
+
+    ok, msg, text = call_tool_text("queryDailyHealthData", {"days": days})
+
 
     if not ok:
         return False, msg
