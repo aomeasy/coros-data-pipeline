@@ -150,8 +150,9 @@ def parse_pace_to_seconds(s):
 
 
 def sync_activities():
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=90)).strftime("%Y%m%d")
+    # ใช้เวลา ICT (ไม่ใช่นาฬิกา UTC ของ runner) เพื่อให้ช่วงวันที่ตรงกับวันตามเวลาไทย
+    end_date = datetime.now(ICT).strftime("%Y%m%d")
+    start_date = (datetime.now(ICT) - timedelta(days=90)).strftime("%Y%m%d")
     args = {
         "startDate": start_date,
         "endDate": end_date,
@@ -243,6 +244,12 @@ def sync_activities():
             # naive datetime string ตามเวลาไทย ให้ format เหมือนของเดิม)
             activity["startTime"] = datetime.fromtimestamp(ts, tz=ICT).replace(tzinfo=None).isoformat()
 
+        # SELF-CHECK: ยืนยัน timezone fix — วันที่ที่คำนวณจาก timestamp ต้องตรงกับวันที่
+        # ที่ COROS แสดงในหัวข้อกิจกรรม ถ้าไม่มี warning นี้ใน log แปลว่าตรงทุกกิจกรรม
+        if date_str and activity["startTime"][:10] != date_str:
+            log.warning("activity_date_mismatch", activity_id=activity["activityId"],
+                        header=date_str, computed=activity["startTime"][:10])
+
         if coros_db.store_activity(activity):
             count += 1
         else:
@@ -299,6 +306,12 @@ def sync_sleep_and_health(days=7):
         date_str = sections[i]
         content = sections[i + 1]
         i += 2
+
+        # DEBUG-TEMP: พิมพ์บรรทัดที่เกี่ยวกับ HRV/Resting/Score/Max ของแต่ละวัน เพื่อดูว่า
+        # regex ด้านล่างตรงกับข้อความจริงของ COROS ไหม — รันดู log 1 ครั้งแล้วลบบล็อกนี้ทิ้ง
+        for _kw in ("HRV", "Resting", "Score", "Max"):
+            print(f"  [DEBUG {date_str}] {_kw}:",
+                  [ln.strip()[:80] for ln in content.splitlines() if _kw in ln][:3])
 
         sleep_rec = {"date": date_str}
         daily_rec = {"date": date_str}
