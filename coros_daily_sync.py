@@ -9,7 +9,7 @@ import subprocess
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
@@ -21,6 +21,14 @@ log = get_logger("coros_daily_sync")
 SUBPROCESS_TIMEOUT_S = 60
 MAX_RETRIES = 3
 RETRY_BACKOFF_S = 5
+
+# ผู้ใช้อยู่ประเทศไทย (ICT = UTC+7) แต่ GitHub Actions runner รันด้วยนาฬิกา UTC
+# ถ้าใช้ datetime.fromtimestamp() เฉยๆ (ไม่ระบุ tz) มันจะแปลงตาม timezone ของ
+# เครื่องที่รัน (UTC บน runner) ไม่ใช่เวลาไทย ทำให้กิจกรรมที่เกิดช่วงเที่ยงคืน
+# ถึงตี 7 ตามเวลาไทย ถูกเก็บวันที่ผิดเพี้ยนไปเป็นวันก่อนหน้า (บั๊กที่เจอจาก
+# การตรวจ DB จริง: กิจกรรมที่ COROS ระบุว่า "2026-09-23" ถูกเก็บเป็น
+# "2026-09-22T23:21:52" เพราะ startTimestamp ถูกแปลงแบบ UTC)
+ICT = timezone(timedelta(hours=7))
 
 
 def _run(*args, stdin_input=None, timeout=SUBPROCESS_TIMEOUT_S, retries=MAX_RETRIES):
@@ -176,7 +184,7 @@ def sync_activities():
         date_str = ""
         m = re.match(r'.*—\s*(\d{4}-\d{2}-\d{2})', lines[0])
         if m:
-            date_str = m.group(1).replace("-", "")
+            date_str = m.group(1)  # เก็บแบบมีขีดไว้เหมือนเดิม (ไม่ .replace("-", "") อีกต่อไป)
 
         activity = {
             "activityId": "",
@@ -228,7 +236,12 @@ def sync_activities():
         m = re.search(r'startTimestamp=(\d+)', full_text)
         if m:
             ts = int(m.group(1))
-            activity["startTime"] = datetime.fromtimestamp(ts).isoformat()
+            # BUGFIX: fromtimestamp() แบบไม่ระบุ tz จะแปลงตาม timezone ของเครื่อง
+            # ที่รัน (UTC บน GitHub Actions runner) ไม่ใช่เวลาไทย ทำให้กิจกรรม
+            # ช่วงเที่ยงคืน-ตี7 ตามเวลาไทยตกไปอยู่วันก่อนหน้าใน DB
+            # แก้โดยระบุ tz=ICT ตรงๆ แล้วค่อยตัด tzinfo ออกก่อนเก็บ (เก็บเป็น
+            # naive datetime string ตามเวลาไทย ให้ format เหมือนของเดิม)
+            activity["startTime"] = datetime.fromtimestamp(ts, tz=ICT).replace(tzinfo=None).isoformat()
 
         if coros_db.store_activity(activity):
             count += 1
@@ -270,7 +283,16 @@ def sync_sleep_and_health(days=7):
     if baseline_resting_hr is not None or baseline_hrv is not None:
         print(f"  Header baseline → Resting HR: {baseline_resting_hr} bpm, HRV: {baseline_hrv} ms")
 
-    today_str = datetime.now().strftime("%Y%m%d")
+    # BUGFIX: เดิมเทียบ date_str กับ "วันนี้ตามนาฬิกาเครื่อง" (datetime.now())
+    # แต่ COROS มักยังไม่มีข้อมูลของ "วันนี้" ครบ (sleep ถูกระบุด้วยวันที่ตื่น
+    # และถ้า sync รันตอนเช้ามืดข้อมูลของคืนล่าสุดอาจยังไม่ sync ขึ้น cloud)
+    # ทำให้วันล่าสุดที่ "มีอยู่จริง" ในรายงานมักเป็นเมื่อวาน ไม่ใช่วันนี้ —
+    # การเทียบกับนาฬิกาเครื่องจึงทำให้ is_latest_day เป็น False เสมอ และ
+    # baseline HRV/RestingHR จาก header ไม่เคยถูกใช้เลย
+    # แก้โดยหา "วันล่าสุดที่ปรากฏจริงในรายงาน" จาก section ทั้งหมดก่อน แล้วค่อย
+    # เทียบกับค่านั้นแทน
+    all_section_dates = [sections[i] for i in range(1, len(sections) - 1, 2)]
+    latest_section_date = max(all_section_dates) if all_section_dates else None
 
     i = 1
     while i < len(sections) - 1:
@@ -322,11 +344,8 @@ def sync_sleep_and_health(days=7):
             if m:
                 sleep_rec["awakeDuration"] = int(m.group(1))
 
-        # Phase 0.x fix: only fall back to the report-wide baseline for
-        # TODAY's record. Every earlier date in this sync window used to
-        # silently receive the SAME baseline value, making HRV/RHR look
-        # flat across days that never actually shared that value.
-        is_latest_day = (date_str == today_str)
+        # is_latest_day เทียบกับวันล่าสุดที่ "มีอยู่จริงในรายงานนี้" แทนนาฬิกาเครื่อง
+        is_latest_day = (latest_section_date is not None and date_str == latest_section_date)
 
         m = re.search(r'HRV:\s*(\d+)\s*ms', content)
         if m:
