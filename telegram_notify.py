@@ -35,6 +35,35 @@ def yesterday_str():
     return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
+def normalize_date(raw):
+    """
+    coros_daily_sync.py เก็บวันที่ลง DB แบบปนกันสองรูปแบบ:
+      - "20260924"        (จาก sync_sleep_and_health, ไม่มีขีด)
+      - "2026-09-24"       (จาก sync_activities บาง record, มีขีด)
+      - "2026-09-24T10:45:01"  (isoformat เต็ม เมื่อเจอ startTimestamp)
+    ฟังก์ชันนี้แปลงทุกแบบให้เป็น "YYYY-MM-DD" เดียวกัน เพื่อเทียบวันที่ได้ถูกต้อง
+    คืนค่า None ถ้า parse ไม่ได้
+    """
+    if not raw:
+        return None
+    raw = str(raw).strip()
+
+    # "2026-09-24T10:45:01..." หรือ "2026-09-24 10:45:01..." -> ตัดเอาแค่ 10 ตัวแรก
+    if len(raw) >= 10 and raw[4] == "-" and raw[7] == "-":
+        return raw[:10]
+
+    # "20260924" (8 หลักไม่มีขีด)
+    if len(raw) == 8 and raw.isdigit():
+        return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+
+    # เผื่อรูปแบบอื่นที่มี "20260924" นำหน้าตามด้วยเวลา เช่น "20260924T104501"
+    digits_prefix = raw[:8]
+    if len(digits_prefix) == 8 and digits_prefix.isdigit():
+        return f"{digits_prefix[0:4]}-{digits_prefix[4:6]}-{digits_prefix[6:8]}"
+
+    return None
+
+
 def fmt(value, unit="", digits=1, fallback="—"):
     """format ตัวเลขให้อ่านง่าย คืนค่า fallback ถ้าเป็น None"""
     if value is None:
@@ -97,27 +126,42 @@ def acwr_flag(acwr):
 # =============================================================================
 
 def gather_today_summary():
-    """ดึงข้อมูลของวันนี้จากทุกตารางที่เกี่ยวข้อง"""
+    """
+    ดึงข้อมูลของวันนี้จากทุกตารางที่เกี่ยวข้อง
+
+    หมายเหตุสำคัญ: coros_daily_sync.py เก็บ date/start_time ลง DB แบบปนกันสอง
+    รูปแบบ (มีขีด/ไม่มีขีด) ขึ้นอยู่กับว่า record นั้นมี startTimestamp หรือไม่
+    ดังนั้นห้ามเทียบ string ตรงๆ หรือใช้ SQL BETWEEN กับ date ที่มีขีดเพียงอย่างเดียว
+    (coros_db.get_activities_between จะพลาด record ที่เก็บแบบไม่มีขีด) —
+    ต้องดึงมาแบบกว้างๆ ก่อน แล้วค่อยกรองด้วย normalize_date() ในฝั่ง Python แทน
+    """
     date = today_str()
 
-    # กิจกรรมของวันนี้ (start_time ขึ้นต้นด้วยวันนี้)
-    activities = coros_db.get_activities_between(date, date)
+    # --- กิจกรรม: ดึงมากว้างๆ (90 วันคือช่วงที่ sync ไว้) แล้วกรองด้วยวันที่ normalize แล้ว ---
+    all_recent_activities = coros_db.get_activities_between("00000000", "99999999")
+    activities = [
+        a for a in all_recent_activities
+        if normalize_date(a.get("start_time")) == date
+    ]
 
-    # sleep ของ "เมื่อคืน" มักถูกบันทึกเป็นวันที่ตื่นนอน (วันนี้) — ลองทั้งสองวันกันพลาด
-    sleep_rows = coros_db.get_recent_sleep(days=3)
-    sleep_today = next((r for r in sleep_rows if r.get("date") == date), None)
+    # --- sleep: ดึง 10 แถวล่าสุด กรองด้วย normalize_date ---
+    sleep_rows = coros_db.get_recent_sleep(days=10)
+    sleep_today = next((r for r in sleep_rows if normalize_date(r.get("date")) == date), None)
     if not sleep_today:
-        sleep_today = next((r for r in sleep_rows if r.get("date") == yesterday_str()), None)
+        # sleep ของ "เมื่อคืน" บางทีถูกบันทึกด้วยวันที่เข้านอน (เมื่อวาน) แทนวันที่ตื่น
+        sleep_today = next(
+            (r for r in sleep_rows if normalize_date(r.get("date")) == yesterday_str()), None
+        )
 
-    # สุขภาพรายวัน
-    health_rows = coros_db.get_recent_daily_health(days=3)
-    health_today = next((r for r in health_rows if r.get("date") == date), None)
+    # --- สุขภาพรายวัน ---
+    health_rows = coros_db.get_recent_daily_health(days=10)
+    health_today = next((r for r in health_rows if normalize_date(r.get("date")) == date), None)
 
-    # strain / ACWR
-    strain_today = coros_db.get_strain_by_date(date)
+    # --- strain / ACWR: get_strain_by_date ใช้ exact match ต้องลองทั้งสองรูปแบบ ---
+    strain_today = coros_db.get_strain_by_date(date) or coros_db.get_strain_by_date(date.replace("-", ""))
 
-    # journal (manual log)
-    journal_today = coros_db.get_journal_by_date(date)
+    # --- journal (manual log): เก็บด้วยมือ ปกติจะเป็น format เดียวกันเสมอ แต่กันไว้ก่อน ---
+    journal_today = coros_db.get_journal_by_date(date) or coros_db.get_journal_by_date(date.replace("-", ""))
 
     return {
         "date": date,
