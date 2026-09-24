@@ -270,10 +270,16 @@ def sync_sleep_and_health(days=7):
             "days": 7,
         })
         if ok_hrv and hrv_text:
+            current_date = None
             for line in hrv_text.splitlines():
-                m = re.search(r'(\d{4}-\d{2}-\d{2}):.*?HRV Avg:\s*(\d+)\s*ms', line)
-                if m:
-                    hrv_by_date[m.group(1).replace("-", "")] = int(m.group(2))
+                m_date = re.search(r'^(\d{4}-\d{2}-\d{2}):', line)
+                if m_date:
+                    current_date = m_date.group(1).replace("-", "")
+                    continue
+                m_hrv = re.search(r'HRV Avg:\s*(\d+)\s*ms', line)
+                if current_date and m_hrv:
+                    hrv_by_date[current_date] = int(m_hrv.group(1))
+                    current_date = None
     except Exception as e:
         log.warning("querySleepHrv failed (continuing)", error=str(e))
 
