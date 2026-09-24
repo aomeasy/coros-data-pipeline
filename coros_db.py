@@ -2,10 +2,16 @@
 """
 COROS Data Cache Manager
 ไฟล์: coros_db.py
-DB Path: C:/Users/Adcharaporn-U1200/AppData/Local/hermes/coros_cache.db
+DB Path: coros_cache.db (อยู่โฟลเดอร์เดียวกับไฟล์นี้ — รันใน GitHub Actions)
 
 ใช้เก็บข้อมูล COROS ทั้งหมด (กิจกรรม, การนอน, สุขภาพรายวัน, strain) ไว้ใน SQLite
 ทุก skill เรียกใช้ได้ ไม่ต้องเรียก COROS API ซ้ำ
+
+การเปลี่ยนแปลงรอบนี้ (ส่วนอื่นคงเดิมทั้งหมด):
+  1. store_* ทุกตัวคืน True/False (เดิมคืน None เสมอ ทำให้ log "rejected" เป็นเท็จ)
+  2. sleep_data / daily_health เปลี่ยนจาก INSERT OR REPLACE เป็น upsert แบบ COALESCE
+     ค่า NULL จากการ sync รอบใหม่จะไม่ลบค่าที่เคยเก็บไว้ (เช่น HRV)
+  3. journal_mode เปลี่ยน WAL -> DELETE เพื่อให้ได้ไฟล์ .db ไฟล์เดียวตอน commit เข้า git
 """
 
 import sqlite3
@@ -23,9 +29,28 @@ def get_conn():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # DELETE (ไม่ใช่ WAL): workflow commit ไฟล์ coros_cache.db ไฟล์เดียวเข้า repo
+    # ถ้าเป็น WAL ข้อมูลล่าสุดอาจค้างใน -wal แล้วไม่ถูก commit
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+def _upsert(sql, params):
+    """
+    รัน INSERT/UPSERT แล้วคืน True ถ้าเขียนสำเร็จ / False ถ้า DB ปฏิเสธ
+    (เช่น key เป็น NULL, ชนกับ constraint) — ปิด connection เสมอ
+    """
+    conn = get_conn()
+    try:
+        conn.execute(sql, params)
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        print(f"DB write failed: {e}")
+        return False
+    finally:
+        conn.close()
 
 
 def init_db():
@@ -147,25 +172,24 @@ def init_db():
 
 
 def store_alert(date, alert_type, risk_level, signals=None):
-    """เก็บ alert log ลง database"""
-    conn = get_conn()
-    import json
-    conn.execute(
+    """เก็บ alert log ลง database — คืน True/False"""
+    return _upsert(
         """INSERT INTO alert_history (date, alert_type, risk_level, signals, created_at) VALUES (?, ?, ?, ?, ?)""",
         (date, alert_type, risk_level, json.dumps(signals) if signals else None, datetime.now().isoformat())
     )
-    conn.commit()
-    conn.close()
 
 
 def store_activity(activity):
     """
-    เก็บกิจกรรมลง database
+    เก็บกิจกรรมลง database (INSERT OR REPLACE ตาม activity_id — logic เดิม)
     activity: dict จาก COROS getActivityDetail
+    คืน True ถ้าเขียนสำเร็จ / False ถ้า activityId ว่างหรือ DB ปฏิเสธ
     """
+    # activityId ว่าง ("") ผ่าน NOT NULL ได้ แต่จะชนกันเองแล้วทับกันหมด จึงปฏิเสธ
+    if not activity.get("activityId"):
+        return False
     now = datetime.now().isoformat()
-    conn = get_conn()
-    conn.execute("""
+    return _upsert("""
         INSERT OR REPLACE INTO activities
         (activity_id, sport_type, start_time, distance_m, duration_s,
          avg_pace_s, avg_cadence, calories, avg_hr, max_hr,
@@ -188,8 +212,6 @@ def store_activity(activity):
         json.dumps(activity, ensure_ascii=False),
         now, now
     ))
-    conn.commit()
-    conn.close()
 
 
 def get_recent_activities(sport="running", limit=5):
@@ -233,14 +255,30 @@ def store_sleep(data):
     """
     เก็บข้อมูลการนอน
     data: dict จาก queryDailyHealthData หรือ querySleepData
+
+    upsert ตาม date: ค่าใหม่ที่เป็น NULL จะไม่ทับค่าเดิมที่มีอยู่แล้ว
+    (sync ดึงย้อน 7 วันทุกรอบ ค่า HRV ที่เคยเติมไว้จึงไม่ถูกลบ)
+    คืน True ถ้าเขียนสำเร็จ / False ถ้า date ว่างหรือ DB ปฏิเสธ
     """
+    if not data.get("date"):
+        return False
     now = datetime.now().isoformat()
-    conn = get_conn()
-    conn.execute("""
-        INSERT OR REPLACE INTO sleep_data
+    return _upsert("""
+        INSERT INTO sleep_data
         (date, sleep_score, duration_min, deep_sleep_pct, light_sleep_pct,
          rem_sleep_pct, awake_min, hrv, resting_hr, summary_json, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(date) DO UPDATE SET
+            sleep_score     = COALESCE(excluded.sleep_score, sleep_data.sleep_score),
+            duration_min    = COALESCE(NULLIF(excluded.duration_min, 0), sleep_data.duration_min),
+            deep_sleep_pct  = COALESCE(excluded.deep_sleep_pct, sleep_data.deep_sleep_pct),
+            light_sleep_pct = COALESCE(excluded.light_sleep_pct, sleep_data.light_sleep_pct),
+            rem_sleep_pct   = COALESCE(excluded.rem_sleep_pct, sleep_data.rem_sleep_pct),
+            awake_min       = COALESCE(excluded.awake_min, sleep_data.awake_min),
+            hrv             = COALESCE(excluded.hrv, sleep_data.hrv),
+            resting_hr      = COALESCE(excluded.resting_hr, sleep_data.resting_hr),
+            summary_json    = excluded.summary_json,
+            updated_at      = excluded.updated_at
     """, (
         data.get("date"),
         data.get("sleepScore"),
@@ -254,8 +292,6 @@ def store_sleep(data):
         json.dumps(data, ensure_ascii=False),
         now, now
     ))
-    conn.commit()
-    conn.close()
 
 
 def get_recent_sleep(days=7):
@@ -273,15 +309,32 @@ def store_daily_health(data):
     """
     เก็บข้อมูลสุขภาพรายวัน
     data: dict จาก queryDailyHealthData
+
+    upsert ตาม date: ค่าใหม่ที่เป็น NULL จะไม่ทับค่าเดิม
+    คืน True ถ้าเขียนสำเร็จ / False ถ้า date ว่างหรือ DB ปฏิเสธ
     """
+    if not data.get("date"):
+        return False
     now = datetime.now().isoformat()
-    conn = get_conn()
-    conn.execute("""
-        INSERT OR REPLACE INTO daily_health
+    return _upsert("""
+        INSERT INTO daily_health
         (date, sleep_score, steps, stress_score, avg_hr, max_hr, calories_burned,
          respiratory_rate, skin_temp_deviation_c, spo2_avg, spo2_min,
          summary_json, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(date) DO UPDATE SET
+            sleep_score           = COALESCE(excluded.sleep_score, daily_health.sleep_score),
+            steps                 = COALESCE(excluded.steps, daily_health.steps),
+            stress_score          = COALESCE(excluded.stress_score, daily_health.stress_score),
+            avg_hr                = COALESCE(excluded.avg_hr, daily_health.avg_hr),
+            max_hr                = COALESCE(excluded.max_hr, daily_health.max_hr),
+            calories_burned       = COALESCE(excluded.calories_burned, daily_health.calories_burned),
+            respiratory_rate      = COALESCE(excluded.respiratory_rate, daily_health.respiratory_rate),
+            skin_temp_deviation_c = COALESCE(excluded.skin_temp_deviation_c, daily_health.skin_temp_deviation_c),
+            spo2_avg              = COALESCE(excluded.spo2_avg, daily_health.spo2_avg),
+            spo2_min              = COALESCE(excluded.spo2_min, daily_health.spo2_min),
+            summary_json          = excluded.summary_json,
+            updated_at            = excluded.updated_at
     """, (
         data.get("date"),
         data.get("sleepScore"),
@@ -297,8 +350,6 @@ def store_daily_health(data):
         json.dumps(data, ensure_ascii=False),
         now, now
     ))
-    conn.commit()
-    conn.close()
 
 
 def get_recent_daily_health(days=7):
@@ -337,7 +388,10 @@ def cache_daily_health(start_date, end_date):
 
 
 def clear_cache():
-    """ล้างข้อมูลทั้งหมดใน cache (ระวัง!)"""
+    """
+    ล้างข้อมูลใน cache (ระวัง!)
+    หมายเหตุ: ไม่ล้าง journal_entries และ alert_history (พฤติกรรมเดิม)
+    """
     conn = get_conn()
     conn.executescript("""
         DELETE FROM activities;
@@ -370,10 +424,12 @@ def store_journal(data):
     """
     เก็บ journal entry
     data: dict ของ journal entry
+    คืน True ถ้าเขียนสำเร็จ / False ถ้า date ว่างหรือ DB ปฏิเสธ
     """
+    if not data.get("date"):
+        return False
     now = datetime.now().isoformat()
-    conn = get_conn()
-    conn.execute("""
+    return _upsert("""
         INSERT OR REPLACE INTO journal_entries
         (date, alcohol_units, caffeine_after_14, late_meal,
          screen_before_bed_min, stress_level, exercise_evening,
@@ -391,8 +447,6 @@ def store_journal(data):
         data.get("notes", ""),
         now, now
     ))
-    conn.commit()
-    conn.close()
 
 
 def get_journal_by_date(date):
@@ -425,10 +479,12 @@ def store_daily_strain(data):
     data: dict ต้องมีอย่างน้อย {"date": "YYYY-MM-DD", "day_strain": float,
                                   "trimp": float, "acwr": float}
     ฟิลด์อื่นที่ strain_engine ส่งมาเพิ่มจะถูกเก็บทั้งชุดไว้ใน summary_json
+    คืน True ถ้าเขียนสำเร็จ / False ถ้า date ว่างหรือ DB ปฏิเสธ
     """
+    if not data.get("date"):
+        return False
     now = datetime.now().isoformat()
-    conn = get_conn()
-    conn.execute("""
+    return _upsert("""
         INSERT OR REPLACE INTO daily_strain
         (date, day_strain, trimp, acwr, summary_json, created_at, updated_at)
         VALUES (?,?,?,?,?,?,?)
@@ -440,8 +496,6 @@ def store_daily_strain(data):
         json.dumps(data, ensure_ascii=False),
         now, now
     ))
-    conn.commit()
-    conn.close()
 
 
 def get_recent_daily_strain(days=28):
