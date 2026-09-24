@@ -42,7 +42,14 @@ jobs:
 
       - name: Export to JSON
         run: python export.py
-
+        
+      - name: Send Telegram Summary
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python telegram_notify.py
+        
       - name: Commit DB + docs
         run: |
           git config user.name "github-actions[bot]"
