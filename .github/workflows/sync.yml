@@ -2,7 +2,7 @@ name: COROS Daily Sync
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # 9:00 AM ICT = 1:00 AM UTC
+    - cron: '0 0 * * *'  # 7:00 AM ICT = 0:00 UTC
   workflow_dispatch:
 
 jobs:
