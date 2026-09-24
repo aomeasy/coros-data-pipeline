@@ -261,12 +261,24 @@ def sync_activities():
 
 
 def sync_sleep_and_health(days=7):
- 
-    ok, msg, text = call_tool_text("querySleepHrv", {
-        "startDate": (datetime.now(ICT) - timedelta(days=7)).strftime("%Y%m%d"),
-        "endDate": datetime.now(ICT).strftime("%Y%m%d"),
-        "days": 7,
-    })
+    # API 1: เรียก querySleepHrv สำหรับ HRV รายวัน (ไม่บังคับ ถ้าไม่สำเร็จก็ข้าม)
+    hrv_by_date = {}
+    try:
+        ok_hrv, msg_hrv, hrv_text = call_tool_text("querySleepHrv", {
+            "startDate": (datetime.now(ICT) - timedelta(days=7)).strftime("%Y%m%d"),
+            "endDate": datetime.now(ICT).strftime("%Y%m%d"),
+            "days": 7,
+        })
+        if ok_hrv and hrv_text:
+            for line in hrv_text.splitlines():
+                m = re.search(r'(\d{4}-\d{2}-\d{2}):.*?HRV Avg:\s*(\d+)\s*ms', line)
+                if m:
+                    hrv_by_date[m.group(1).replace("-", "")] = int(m.group(2))
+    except Exception as e:
+        log.warning("querySleepHrv failed (continuing)", error=str(e))
+
+    # API 2: queryDailyHealthData สำหรับ steps, calories, stress, avg_hr, baseline
+    ok, msg, text = call_tool_text("queryDailyHealthData", {"days": days})
 
     if not ok:
         return False, msg
@@ -356,6 +368,8 @@ def sync_sleep_and_health(days=7):
         m = re.search(r'HRV:\s*(\d+)\s*ms', content)
         if m:
             sleep_rec["hrv"] = int(m.group(1))
+        elif date_str in hrv_by_date:
+            sleep_rec["hrv"] = hrv_by_date[date_str]
 
         if "Sleep Summary:" in content:
             if coros_db.store_sleep(sleep_rec):
