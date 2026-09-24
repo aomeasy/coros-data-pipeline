@@ -281,9 +281,6 @@ def sync_sleep_and_health(days=7):
 
     sections = re.split(r'---\s*(\d{4}\d{2}\d{2})\s*---', text)
 
-    if baseline_resting_hr is not None or baseline_hrv is not None:
-        print(f"  Header baseline → Resting HR: {baseline_resting_hr} bpm, HRV: {baseline_hrv} ms")
-
     # BUGFIX: เดิมเทียบ date_str กับ "วันนี้ตามนาฬิกาเครื่อง" (datetime.now())
     # แต่ COROS มักยังไม่มีข้อมูลของ "วันนี้" ครบ (sleep ถูกระบุด้วยวันที่ตื่น
     # และถ้า sync รันตอนเช้ามืดข้อมูลของคืนล่าสุดอาจยังไม่ sync ขึ้น cloud)
@@ -322,40 +319,10 @@ def sync_sleep_and_health(days=7):
         if m:
             daily_rec["stressLevel"] = int(m.group(1))
 
-        if "Sleep Summary:" in content:
-            sleep_section = content.split("Sleep Summary:")[1]
-
-            m = re.search(r'Total:\s*([\d+h\s]+\d+min)', sleep_section)
-            if m:
-                sleep_rec["duration"] = parse_hm(m.group(1))
-
-            m = re.search(r'Deep:\s*([\d+h\s]+\d+min)', sleep_section)
-            if m:
-                deep_min = parse_hm(m.group(1))
-                if sleep_rec.get("duration", 0) > 0:
-                    sleep_rec["deepSleepRatio"] = round(deep_min / sleep_rec["duration"] * 100, 1)
-
-            m = re.search(r'Light:\s*([\d+h\s]+\d+min)', sleep_section)
-            if m:
-                light_min = parse_hm(m.group(1))
-                if sleep_rec.get("duration", 0) > 0:
-                    sleep_rec["lightSleepRatio"] = round(light_min / sleep_rec["duration"] * 100, 1)
-
-            m = re.search(r'REM:\s*([\d+h\s]+\d+min)', sleep_section)
-            if m:
-                rem_min = parse_hm(m.group(1))
-                if sleep_rec.get("duration", 0) > 0:
-                    sleep_rec["remSleepRatio"] = round(rem_min / sleep_rec["duration"] * 100, 1)
-
-            m = re.search(r'Awake:\s*(\d+)\s*min', sleep_section)
-            if m:
-                sleep_rec["awakeDuration"] = int(m.group(1))
 
         # is_latest_day เทียบกับวันล่าสุดที่ "มีอยู่จริงในรายงานนี้" แทนนาฬิกาเครื่อง
         is_latest_day = (latest_section_date is not None and date_str == latest_section_date)
-
-        
-        
+    
         
         m = re.search(r'Sleep Score:\s*(\d+)', content)
         if m:
