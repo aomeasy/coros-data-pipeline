@@ -16,6 +16,15 @@ principle ข้อ 4 ของ roadmap "ทุก score ต้องอธิ�
   3. ACWR = avg(7 วันล่าสุด) / avg(28 วันล่าสุด) ของ TRIMP รายวัน
   4. เก็บลงตาราง daily_strain
 
+การเปลี่ยนแปลงรอบนี้ (ส่วนอื่นคงเดิมทั้งหมด):
+  - compute_acwr: หารด้วย "จำนวนวันของประวัติจริง" (สูงสุด 7/28) แทนหาร 7/28 คงที่
+    เดิมเมื่อประวัติสั้น (เช่น 12 วัน) chronic ถูกหารด้วย 28 ทำให้ต่ำเกินจริง
+    และ ACWR พอง (ซ้อมสม่ำเสมอ 12 วันได้ ~2.3 ทั้งที่ควรเป็น 1.0)
+  - compute_acwr: confidence นับจากความยาวประวัติ (ไม่ใช่จำนวนวันที่มีกิจกรรม)
+    และฟันธง risk เฉพาะเมื่อประวัติครบ 28 วัน (stable) + คืนฟิลด์ history_days
+  - estimate_hr_rest: เรียงตามวันที่ก่อนหยิบ 14 แถวล่าสุด (get_recent_sleep คืนใหม่->เก่า
+    เดิม [-14:] จะหยิบแถวที่เก่าที่สุดเมื่อมีเกิน 14 แถว)
+
 TODO เมื่อ Layer 2 มา (queryHealthCheckTimeSeries):
   - แทน per-activity TRIMP ด้วย time-in-zone จาก continuous HR ทั้งวัน
   - ลบ estimate_hr_max()/estimate_hr_rest() fallback แล้วใช้ HR zone จริงจาก
@@ -58,7 +67,10 @@ def estimate_hr_rest(sleep_records: List[dict], fallback: float = DEFAULT_HR_RES
     ประมาณ HR rest จาก resting_hr ล่าสุดใน sleep_data (ค่าที่แม่นกว่า HR
     นิ่งตอนกลางวัน เพราะวัดตอนนอนหลับลึก)
     """
-    recent = [r.get("resting_hr") for r in sleep_records[-14:] if r.get("resting_hr")]
+    # เรียงเก่า->ใหม่ตาม date ก่อน เพื่อให้ [-14:] คือ 14 แถวล่าสุดจริง
+    # (ไม่ว่าผู้เรียกจะส่งมาเรียงแบบไหน เช่น coros_db.get_recent_sleep คืนใหม่->เก่า)
+    ordered = sorted(sleep_records, key=lambda r: r.get("date") or "")
+    recent = [r.get("resting_hr") for r in ordered[-14:] if r.get("resting_hr")]
     if not recent:
         return fallback
     return sum(recent) / len(recent)
@@ -154,38 +166,45 @@ def compute_acwr(daily_trimp: Dict[str, float], as_of_date: str) -> Optional[dic
     """
     ACWR = เฉลี่ย TRIMP 7 วันล่าสุด / เฉลี่ย TRIMP 28 วันล่าสุด (นับถึง as_of_date)
     ACWR > 1.5 = ความเสี่ยงบาดเจ็บสูง (มาตรฐานวงการกีฬา)
-    ต้องมีข้อมูลอย่างน้อย 28 วันถึงจะคำนวณ chronic ได้แม่นยำ — ถ้าน้อยกว่านั้น
-    คืน confidence: "building" เหมือนกับ baseline_engine
+
+    ประวัติสั้นกว่า 28 วัน: หารด้วยจำนวนวันของประวัติจริง (history_days) แทน 28
+    เพื่อไม่ให้ chronic ต่ำเกินจริงจนค่า ACWR พอง — และไม่ฟันธง risk จนกว่า
+    ประวัติจะครบ 28 วัน (confidence = "stable")
+      history_days = จำนวนวันตั้งแต่วันแรกที่มีข้อมูลจนถึง as_of_date (รวมวันพัก)
+      confidence: stable >= 28 วัน | moderate >= 14 วัน | building < 14 วัน
     """
     try:
         ref_date = datetime.strptime(as_of_date, "%Y-%m-%d")
     except ValueError:
         return None
 
+    # ความยาวประวัติจริง นับจากวันแรกที่มีข้อมูล (ไม่ใช่จำนวนวันที่มีกิจกรรม)
+    history_days = 0
+    if daily_trimp:
+        first = min(datetime.strptime(d, "%Y-%m-%d") for d in daily_trimp)
+        history_days = max(0, (ref_date - first).days + 1)
+
     def _avg_window(days: int) -> Optional[float]:
+        span = min(days, history_days)  # ไม่หารด้วยวันที่ยังไม่มีประวัติ
         vals = []
-        for i in range(days):
+        for i in range(span):
             d = (ref_date - timedelta(days=i)).strftime("%Y-%m-%d")
             if d in daily_trimp:
                 vals.append(daily_trimp[d])
         if not vals:
             return None
-        return sum(vals) / days  # หารด้วย days ทั้งหมด (ไม่ใช่แค่ len(vals))
-        # ตั้งใจหารด้วย days คงที่: วันที่ไม่มีกิจกรรม = TRIMP 0 จริงๆ (พักผ่อน)
-        # ไม่ใช่ missing data ในความหมายเดียวกับ baseline_engine
+        return sum(vals) / span  # หารด้วย span (ไม่ใช่แค่ len(vals))
+        # ตั้งใจหารด้วยจำนวนวันในช่วงคงที่: วันที่ไม่มีกิจกรรมภายในช่วงประวัติจริง
+        # = TRIMP 0 จริงๆ (พักผ่อน) ไม่ใช่ missing data ในความหมายเดียวกับ baseline_engine
 
     acute = _avg_window(7)
     chronic = _avg_window(28)
 
-    days_with_data = sum(
-        1 for i in range(28)
-        if (ref_date - timedelta(days=i)).strftime("%Y-%m-%d") in daily_trimp
-    )
-    confidence = "stable" if days_with_data >= 21 else "moderate" if days_with_data >= 7 else "building"
+    confidence = "stable" if history_days >= 28 else "moderate" if history_days >= 14 else "building"
 
     if acute is None or chronic is None or chronic == 0:
         return {"acwr": None, "acute_avg": acute, "chronic_avg": chronic,
-                "confidence": confidence, "risk": "unknown"}
+                "confidence": confidence, "risk": "unknown", "history_days": history_days}
 
     ratio = round(acute / chronic, 2)
     if ratio > 1.5:
@@ -200,7 +219,10 @@ def compute_acwr(daily_trimp: Dict[str, float], as_of_date: str) -> Optional[dic
         "acute_avg": round(acute, 1),
         "chronic_avg": round(chronic, 1),
         "confidence": confidence,
-        "risk": risk if confidence != "building" else "unknown",  # ไม่ฟันธง risk ตอนข้อมูลน้อย
+        # ฟันธง risk เมื่อประวัติครบ 28 วันเท่านั้น
+        # (ถ้าอยากให้ป้ายกลับมาเร็วขึ้น เปลี่ยนเป็น confidence != "building")
+        "risk": risk if confidence == "stable" else "unknown",
+        "history_days": history_days,
     }
 
 
