@@ -689,19 +689,34 @@ def build_message(data):
             # C3 — Stress สูง + Recovery เมื่อวานดี
             yesterday_data = history[-2] if history[-1].get("date") == date else history[-1]
             yesterday_rec = yesterday_data.get("recovery_score") or 0
-            if stress_today > 50 and yesterday_rec >= 70:
+            if stress_today > 60 and yesterday_rec >= 70:
                 insights.append(f"🟡 Recovery เมื่อวานอยู่ในเกณฑ์ดี ({yesterday_rec:.0f}/100) แต่ความเครียดวันนี้ค่อนข้างสูง ({stress_today:.0f}/100) ระวังกระทบการนอนคืนนี้")
 
-        if len(history) >= 7:
+        if len(history) >= 8:
             # B3 — เทียบ CTL วันนี้กับ 7 วันก่อน
-            ctl_7d_ago = history[-7].get("ctl")
-            if ctl_now and ctl_7d_ago and ctl_now < ctl_7d_ago - 2:
+            ctl_7d_ago = history[-8].get("ctl")
+            if ctl_now and ctl_7d_ago and ctl_now < ctl_7d_ago - 3:
                 insights.append(f"🟡 ความฟิต (CTL) ลดลงจาก {ctl_7d_ago:.1f} เป็น {ctl_now:.1f} ในรอบสัปดาห์ หากไม่ได้อยู่ในช่วง Taper หรือพักฟื้น ควรพิจารณาเพิ่ม Training Load")
 
         if len(history) >= 5:
             # B1 — Form สูงต่อเนื่อง + steps ต่ำ
             form_high_days = sum(1 for d in history[-5:] if (d.get("tsb") or 0) > 10)
-            if form_high_days >= 5 and steps < 5000:
+            
+            # ตรวจสอบว่าเป็นช่วง Taper ของ race_prep หรือไม่
+            is_taper = False
+            if user_config and user_config.get("user_goal") == "race_prep":
+                race_date_str = user_config.get("race_date")
+                if race_date_str:
+                    try:
+                        from datetime import datetime
+                        race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
+                        days_to_race = (race_dt - datetime.now()).days
+                        if 0 < days_to_race <= 14:
+                            is_taper = True
+                    except Exception:
+                        pass
+
+            if form_high_days >= 5 and steps < 5000 and not is_taper:
                 insights.append(f"🟡 Form เป็นบวกต่อเนื่องเกิน 5 วัน (ร่างกายสดชื่นมาก) แต่ก้าวเดินวันนี้น้อย ({steps:.0f} ก้าว) ระวังเข้าสู่ภาวะ Detraining (ความฟิตลด) หากไม่ได้ตั้งใจพัก")
 
             # E2 — Sleep eff < 85% ต่อเนื่อง 5 วัน
@@ -712,8 +727,11 @@ def build_message(data):
         if len(history) >= 3:
             # E1 — Recovery ลดลงต่อเนื่อง 3 วัน
             rec_trends = [d.get("recovery_score") or 0 for d in history[-3:]]
-            if rec_trends[0] > rec_trends[1] > rec_trends[2] and rec_trends[2] < 50:
-                insights.append(f"🔴 Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายกำลังดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก")
+            if rec_trends[0] > rec_trends[1] > rec_trends[2]:
+                if len(history) >= 5 and sum(1 for i in range(len(history)-5, len(history)-1) if history[i].get("recovery_score") > history[i+1].get("recovery_score")) >= 4:
+                    insights.append(f"🔴 Recovery Score ลดลงติดต่อกัน 5 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายดิ่งสะสมมาก ควรพักการซ้อมหนักทันที")
+                else:
+                    insights.append(f"🟡 Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ระวังร่างกายดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก")
 
     # กลุ่ม D: Goal-aware (ใช้ user_config)
     if user_config:
