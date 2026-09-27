@@ -222,10 +222,12 @@ def gather_today_summary():
     ]
 
     # --- sleep: ดึง 10 แถวล่าสุด กรองด้วย normalize_date ---
+    # การนอนของ "เมื่อคืน" (คืนที่ผ่านมา) ควรถูกบันทึกด้วยวันที่ตื่น (วันนี้)
+    # แต่ COROS บางครั้งอาจบันทึกด้วยวันที่เข้านอน (เมื่อวาน) ลองทั้งสองแบบ
     sleep_rows = coros_db.get_recent_sleep(days=10)
     sleep_today = next((r for r in sleep_rows if normalize_date(r.get("date")) == date), None)
     if not sleep_today:
-        # sleep ของ "เมื่อคืน" บางทีถูกบันทึกด้วยวันที่เข้านอน (เมื่อวาน) แทนวันที่ตื่น
+        # ลองหาด้วยวันที่เมื่อวาน (กรณีบันทึกด้วยวันที่เข้านอน)
         sleep_today = next(
             (r for r in sleep_rows if normalize_date(r.get("date")) == yesterday_str()), None
         )
@@ -245,6 +247,40 @@ def gather_today_summary():
 
     # --- journal (manual log): เก็บด้วยมือ ปกติจะเป็น format เดียวกันเสมอ แต่กันไว้ก่อน ---
     journal_today = coros_db.get_journal_by_date(date) or coros_db.get_journal_by_date(date.replace("-", ""))
+    
+    # --- ดึงข้อมูลวิเคราะห์ SQI, Recovery, Illness Risk จาก export.py/app.py ---
+    import sleep_analysis
+    
+    sqi = None
+    recovery_score = None
+    illness_risk = None
+    
+    if sleep_today:
+        # คำนวณ SQI
+        sleep_for_sqi = [sleep_today]
+        sqi = sleep_analysis.calculate_sqi(sleep_for_sqi)
+        
+        # คำนวณ Recovery Score
+        recent_sleep = sleep_rows[:7]  # 7 วันล่าสุด
+        baselines = {}
+        for metric in ["hrv_ms", "resting_hr"]:
+            baselines[metric] = sleep_analysis.compute_baseline(
+                recent_sleep, [metric], window=7
+            )
+        
+        recovery_score = sleep_analysis.recovery_score(
+            hrv_today=sleep_today.get("hrv"),
+            hrv_baseline=baselines.get("hrv_ms"),
+            rhr_today=sleep_today.get("resting_hr"),
+            rhr_baseline=baselines.get("resting_hr"),
+            sleep_performance_pct=min((sleep_today.get("duration_min") or 0) / 480 * 100, 100),
+            sleep_efficiency_pct=((sleep_today.get("duration_min") or 0) / 
+                                  ((sleep_today.get("duration_min") or 0) + (sleep_today.get("awake_min") or 0)) * 100
+                                  if (sleep_today.get("duration_min") or 0) + (sleep_today.get("awake_min") or 0) > 0 else 0)
+        )
+        
+        # คำนวณ Illness Risk
+        illness_risk = sleep_analysis.compute_illness_risk(sleep_today, baselines)
 
     return {
         "date": date,
@@ -254,6 +290,9 @@ def gather_today_summary():
         "strain": strain_today,
         "journal": journal_today,
         "history_days": history_days,
+        "sqi": sqi,
+        "recovery_score": recovery_score,
+        "illness_risk": illness_risk,
     }
 
 
@@ -314,7 +353,11 @@ def build_message(data):
     # --- การนอน ---
     if sleep:
         lines.append("")
-        lines.append("😴 <b>การนอน</b>")
+        sleep_date_str = sleep.get('date', '')
+        if normalize_date(sleep_date_str) == yesterday_str():
+            lines.append("😴 <b>การนอน (เมื่อคืน)</b>")
+        else:
+            lines.append("😴 <b>การนอน</b>")
         
         duration_min = sleep.get('duration_min') or 0
         lines.append(f"  ระยะเวลารวม: {minutes_to_hm(duration_min)}")
@@ -344,10 +387,28 @@ def build_message(data):
             f"  💓 HRV: {fmt(sleep.get('hrv'), '', 0)} | Resting HR: {fmt(sleep.get('resting_hr'), '', 0)}"
         )
         
-        # Sleep Score ถ้ามี
-        score = sleep.get('sleep_score')
-        if score:
-            lines.append(f"  📊 Sleep Score: {fmt(score, '', 0)}/100")
+        sqi_data = data.get("sqi") or {}
+        sqi_val = sqi_data.get("sqi")
+        if sqi_val:
+            band = sqi_data.get("band", "")
+            icon = "🟢" if band == "good" else "🟡" if band == "fair" else "🔴" if band == "poor" else ""
+            lines.append(f"  📊 Sleep Quality (SQI): {fmt(sqi_val, '', 1)}/100 {icon}")
+
+    # --- สุขภาพ & การฟื้นฟู ---
+    recovery = data.get("recovery_score")
+    illness = data.get("illness_risk")
+    if recovery or illness:
+        lines.append("")
+        lines.append("🩺 <b>การฟื้นฟู & สุขภาพ</b>")
+        if recovery:
+            rec_score = recovery.get("recovery_score")
+            rec_band = recovery.get("band", "")
+            rec_label = "ดีมาก" if rec_band == "green" else "ปานกลาง" if rec_band == "yellow" else "ต่ำ"
+            lines.append(f"  🔋 Recovery Score: {fmt(rec_score, '', 1)}/100 ({rec_label})")
+        if illness:
+            risk = illness.get("risk_level", "none")
+            risk_label = "ไม่มี" if risk == "none" else "ต่ำ" if risk == "low" else "ปานกลาง" if risk == "medium" else "สูง"
+            lines.append(f"  ⚠️ ความเสี่ยงป่วย: {risk_label}")
 
     # --- Strain / ACWR ---
     if strain:
