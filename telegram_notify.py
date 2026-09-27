@@ -270,6 +270,7 @@ def gather_today_summary():
     sqi = None
     recovery_score = None
     illness_risk = None
+    baselines = {}
     
     if sleep_today:
         # คำนวณ SQI
@@ -309,6 +310,7 @@ def gather_today_summary():
         "sqi": sqi,
         "recovery_score": recovery_score,
         "illness_risk": illness_risk,
+        "baselines": baselines,
     }
 
 
@@ -406,6 +408,15 @@ def build_message(data):
                         elif tsb > -15: form_label = " (ล้าเล็กน้อย)"
                         else: form_label = " (ล้ามาก ควรพัก)"
                     lines.append(f"  • ความสด (Form): {tsb_sign}{fmt(tsb, '', 1)}{form_label}")
+            
+            economy = full_data.get("training_analytics", {}).get("economy")
+            if economy and economy.get("recent_economy"):
+                trend = economy.get("trend", "")
+                change = economy.get("economy_change_pct", 0)
+                change_sign = "+" if change > 0 else ""
+                icon = "🟢" if trend == "improving" else "🔴" if trend == "declining" else "🟡"
+                lines.append(f"  • Running Economy: {fmt(economy['recent_economy'], '', 1)} {icon} ({change_sign}{fmt(change, '%', 1)})")
+
     except Exception as e:
         pass
 
@@ -455,6 +466,19 @@ def build_message(data):
         duration_min = sleep.get('duration_min') or 0
         lines.append(f"  ระยะเวลารวม: {minutes_to_hm(duration_min)}")
         
+        # ดึงเวลาเข้านอน - ตื่นนอน จาก summary_json (ถ้ามี)
+        summary_json = sleep.get('summary_json')
+        if summary_json:
+            try:
+                import json
+                s_data = json.loads(summary_json)
+                start_str = s_data.get("startTime")  # COROS มักจะเก็บ startTime / endTime ใน summary_json
+                end_str = s_data.get("endTime")
+                if start_str and end_str:
+                    lines.append(f"  ⏰ เวลานอน: {start_str} - {end_str}")
+            except:
+                pass
+        
         # แสดง Deep/Light/REM เป็นทั้ง % และเวลา (นาที)
         deep_pct = sleep.get('deep_sleep_pct')
         light_pct = sleep.get('light_sleep_pct')
@@ -476,9 +500,28 @@ def build_message(data):
         if awake_min:
             lines.append(f"  ⚪ Awake: {minutes_to_hm(awake_min)}")
         
-        lines.append(
-            f"  💓 HRV: {fmt(sleep.get('hrv'), '', 0)} | Resting HR: {fmt(sleep.get('resting_hr'), '', 0)}"
-        )
+        baselines = data.get("baselines", {})
+        hrv_today = sleep.get('hrv')
+        hrv_baseline_raw = baselines.get("hrv_ms")
+        hrv_baseline = hrv_baseline_raw.get("baseline") if isinstance(hrv_baseline_raw, dict) else hrv_baseline_raw
+        
+        rhr_today = sleep.get('resting_hr')
+        rhr_baseline_raw = baselines.get("resting_hr")
+        rhr_baseline = rhr_baseline_raw.get("baseline") if isinstance(rhr_baseline_raw, dict) else rhr_baseline_raw
+
+        hrv_str = fmt(hrv_today, '', 0)
+        if hrv_today and hrv_baseline:
+            diff = hrv_today - hrv_baseline
+            sign = "+" if diff > 0 else ""
+            hrv_str += f" ({sign}{diff:.0f} จากค่าเฉลี่ย {hrv_baseline:.0f})"
+
+        rhr_str = fmt(rhr_today, '', 0)
+        if rhr_today and rhr_baseline:
+            diff = rhr_today - rhr_baseline
+            sign = "+" if diff > 0 else ""
+            rhr_str += f" ({sign}{diff:.0f} จากค่าเฉลี่ย {rhr_baseline:.0f})"
+
+        lines.append(f"  💓 HRV: {hrv_str} | Resting HR: {rhr_str}")
         
         sqi_data = data.get("sqi") or {}
         sqi_val = sqi_data.get("sqi")
@@ -510,6 +553,51 @@ def build_message(data):
         lines.append(f"  Day strain: {fmt(strain.get('day_strain'), '', 1)}")
         lines.append(f"  TRIMP: {fmt(strain.get('trimp'), '', 1)}")
         lines.append(acwr_line(strain.get("acwr"), data.get("history_days")))
+
+    # --- บทวิเคราะห์เชิงลึก (Recovery x Sleep) ---
+    insights = []
+    if sleep and recovery:
+        rec_score = recovery.get("recovery_score") or 0
+        duration_min = sleep.get("duration_min") or 0
+        awake_min = sleep.get("awake_min") or 0
+        total_bed_time = duration_min + awake_min
+        efficiency = (duration_min / total_bed_time * 100) if total_bed_time > 0 else 0
+        
+        deep_pct = sleep.get("deep_sleep_pct") or 0
+        rem_pct = sleep.get("rem_sleep_pct") or 0
+        
+        hrv_today = sleep.get("hrv")
+        baselines_dict = data.get("baselines", {})
+        hrv_baseline_raw = baselines_dict.get("hrv_ms")
+        hrv_baseline = hrv_baseline_raw.get("baseline") if isinstance(hrv_baseline_raw, dict) else hrv_baseline_raw
+        
+        # A1 — Recovery สูง + Sleep efficiency ต่ำ
+        if rec_score >= 70 and efficiency < 85:
+            wasted = total_bed_time - duration_min
+            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({fmt(rec_score, '', 0)}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({fmt(efficiency, '', 0)}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({int(wasted)} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
+            
+        # A2 — Deep sleep สูง + REM ต่ำ
+        if deep_pct > 22 and rem_pct < 18:
+            insights.append(f"🟡 ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {fmt(deep_pct, '', 0)}%) แต่ REM ({fmt(rem_pct, '', 0)}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน")
+            
+        # A3 — HRV ต่ำกว่า baseline + Sleep ปกติ
+        if hrv_today and hrv_baseline and efficiency >= 85:
+            std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
+            if hrv_today < (hrv_baseline - std_dev):
+                insights.append(f"🟡 แม้จะนอนได้ดีคืนนี้ แต่ HRV ({fmt(hrv_today, '', 0)}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({fmt(hrv_baseline, '', 0)}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม")
+
+        # กรณีปกติ ไม่มีจุดต้องระวังเตือน
+        if not insights:
+            if rec_score >= 70 and efficiency >= 85:
+                insights.append(f"🟢 การฟื้นฟูและการนอนหลับสมดุลดีเยี่ยม (Recovery {fmt(rec_score, '', 0)}/100, Efficiency {fmt(efficiency, '', 0)}%) ร่างกายฟื้นตัวได้เต็มที่ทั้งทางกายและระบบประสาท พร้อมรับการซ้อม")
+            elif rec_score >= 40:
+                insights.append(f"🟢 การฟื้นฟูอยู่ในเกณฑ์ปกติ รักษารูปแบบการนอนและสังเกตความล้าสะสมตามความรู้สึกจริง")
+
+    if insights:
+        lines.append("")
+        lines.append("💡 <b>บทวิเคราะห์เชิงลึก (Recovery × Sleep)</b>")
+        for ins in insights:
+            lines.append(f"  • {ins}")
 
     # --- Journal (manual) ---
     if journal:
