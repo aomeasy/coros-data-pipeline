@@ -315,16 +315,39 @@ def build_message(data):
     if sleep:
         lines.append("")
         lines.append("😴 <b>การนอน</b>")
-        lines.append(f"  ระยะเวลา: {minutes_to_hm(sleep.get('duration_min'))}")
-        lines.append(f"  Sleep score: {fmt(sleep.get('sleep_score'), '', 0)}")
+        
+        duration_min = sleep.get('duration_min') or 0
+        lines.append(f"  ระยะเวลารวม: {minutes_to_hm(duration_min)}")
+        
+        # แสดง Deep/Light/REM เป็นทั้ง % และเวลา (นาที)
+        deep_pct = sleep.get('deep_sleep_pct')
+        light_pct = sleep.get('light_sleep_pct')
+        rem_pct = sleep.get('rem_sleep_pct')
+        
+        if deep_pct is not None and duration_min > 0:
+            deep_min = int(duration_min * deep_pct / 100)
+            lines.append(f"  🟦 Deep: {fmt(deep_pct, '%', 0)} ({minutes_to_hm(deep_min)})")
+        
+        if light_pct is not None and duration_min > 0:
+            light_min = int(duration_min * light_pct / 100)
+            lines.append(f"  🟨 Light: {fmt(light_pct, '%', 0)} ({minutes_to_hm(light_min)})")
+        
+        if rem_pct is not None and duration_min > 0:
+            rem_min = int(duration_min * rem_pct / 100)
+            lines.append(f"  🟪 REM: {fmt(rem_pct, '%', 0)} ({minutes_to_hm(rem_min)})")
+        
+        awake_min = sleep.get('awake_min')
+        if awake_min:
+            lines.append(f"  ⚪ Awake: {minutes_to_hm(awake_min)}")
+        
         lines.append(
-            f"  Deep/Light/REM: {fmt(sleep.get('deep_sleep_pct'), '%', 0)} / "
-            f"{fmt(sleep.get('light_sleep_pct'), '%', 0)} / "
-            f"{fmt(sleep.get('rem_sleep_pct'), '%', 0)}"
+            f"  💓 HRV: {fmt(sleep.get('hrv'), '', 0)} | Resting HR: {fmt(sleep.get('resting_hr'), '', 0)}"
         )
-        lines.append(
-            f"  HRV: {fmt(sleep.get('hrv'), '', 0)} | Resting HR: {fmt(sleep.get('resting_hr'), '', 0)}"
-        )
+        
+        # Sleep Score ถ้ามี
+        score = sleep.get('sleep_score')
+        if score:
+            lines.append(f"  📊 Sleep Score: {fmt(score, '', 0)}/100")
 
     # --- Strain / ACWR ---
     if strain:
