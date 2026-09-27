@@ -313,8 +313,8 @@ def gather_today_summary():
     # ทำทุกครั้งที่รัน notify — ค่าเดิมที่ยังไม่มีวันนี้จะถูกเติม ส่วนค่าที่คำนวณไม่ได้จะไม่ทับของเดิม
     if date:
         dur = sleep_today.get("duration_min") if sleep_today else None
-        awake = (sleep_today.get("awake_min") or 0) if sleep_today else 0
-        eff = (dur / (dur + awake) * 100) if dur and (dur + awake) > 0 else None
+        eff = sleep_analysis.sleep_efficiency(sleep_today) if sleep_today else None
+        
         coros_db.upsert_daily_metrics_cache({
             "date": date,
             "ctl": ctl_now,
@@ -605,8 +605,9 @@ def build_message(data):
     rec_score = recovery.get("recovery_score") if recovery else 0
     duration_min = sleep.get("duration_min") if sleep else 0
     awake_min = sleep.get("awake_min") if sleep else 0
-    total_bed_time = duration_min + awake_min
-    efficiency = (duration_min / total_bed_time * 100) if total_bed_time > 0 else 0
+    
+    import sleep_analysis
+    efficiency = sleep_analysis.sleep_efficiency(sleep) if sleep else 0
     
     deep_pct = sleep.get("deep_sleep_pct") if sleep else 0
     rem_pct = sleep.get("rem_sleep_pct") if sleep else 0
@@ -669,8 +670,7 @@ def build_message(data):
     if sleep and recovery and not c_triggered:
         # A1 — Recovery สูง + Sleep efficiency ต่ำ
         if rec_score >= 70 and efficiency > 0 and efficiency < 85:
-            wasted = total_bed_time - duration_min
-            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({int(wasted)} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
+            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
             
         # A2 — Deep sleep สูง + REM ต่ำ
         if deep_pct > 22 and rem_pct < 18:
