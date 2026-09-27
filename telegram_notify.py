@@ -101,6 +101,18 @@ def fmt(value, unit="", digits=1, fallback="—"):
         return fallback
 
 
+def format_pace(seconds_per_km):
+    """แปลงวินาที/กม. เป็น นาที:วินาที/km"""
+    if not seconds_per_km:
+        return None
+    try:
+        s = int(seconds_per_km)
+        m = s // 60
+        sec = s % 60
+        return f"{m}:{sec:02d}"
+    except (ValueError, TypeError):
+        return None
+
 def seconds_to_hm(seconds):
     """แปลงวินาที -> '1h 23m'"""
     if seconds is None:
@@ -321,15 +333,54 @@ def build_message(data):
         for act in activities:
             sport = sport_label(act.get("sport_type"))
             distance_km = (act.get("distance_m") or 0) / 1000
-            lines.append(
-                f"  • {sport}: {fmt(distance_km, ' km', 2)} "
-                f"| {seconds_to_hm(act.get('duration_s'))} "
-                f"| HR เฉลี่ย {fmt(act.get('avg_hr'), '', 0)} "
-                f"| {fmt(act.get('calories'), ' kcal', 0)}"
-            )
+            
+            # ข้อมูลพื้นฐานกิจกรรม
+            dur = seconds_to_hm(act.get('duration_s'))
+            hr_avg = fmt(act.get('avg_hr'), '', 0)
+            cals = fmt(act.get('calories'), ' kcal', 0)
+            
+            # ข้อมูลเชิงลึกของการวิ่ง/เดิน
+            extra_stats = []
+            if act.get("sport_type") in ("100", "900"):
+                pace = format_pace(act.get('avg_pace_s'))
+                if pace: extra_stats.append(f"Pace {pace} /km")
+                if act.get('avg_cadence'): extra_stats.append(f"รอบขา {fmt(act.get('avg_cadence'), ' spm', 0)}")
+                if act.get('ascent_m'): extra_stats.append(f"ไต่เขา {fmt(act.get('ascent_m'), ' m', 0)}")
+            
+            score = act.get('score')
+            perf_label = f" (Perf. {int(score)}%)" if score else ""
+            
+            lines.append(f"  • {sport}{perf_label}: {fmt(distance_km, ' km', 2)} | {dur} | HR {hr_avg} | {cals}")
+            if extra_stats:
+                lines.append(f"    └ " + " | ".join(extra_stats))
     else:
         lines.append("")
         lines.append("📍 <b>กิจกรรม</b>: ไม่มีบันทึกวันนี้")
+        
+    # --- สรุปภาพรวมรายวัน & ความฟิต ---
+    import json
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"), "r", encoding="utf-8") as f:
+            full_data = json.load(f)
+            
+            narrative = full_data.get("narrative", {}).get("summary")
+            if narrative:
+                lines.insert(1, "")
+                lines.insert(2, f"🤖 <b>สรุป:</b> {narrative}")
+                
+            fitness = full_data.get("training_analytics", {}).get("fitness")
+            if fitness and activities: # แสดงความฟิตถ้ามีกิจกรรม
+                ctl = fitness.get("ctl")
+                atl = fitness.get("atl")
+                tsb = fitness.get("tsb")
+                if ctl is not None and atl is not None:
+                    lines.append("")
+                    lines.append("📈 <b>สถานะความฟิต</b>")
+                    lines.append(f"  • ความฟิต (CTL): {fmt(ctl, '', 1)} | ล้า (ATL): {fmt(atl, '', 1)}")
+                    tsb_sign = "+" if tsb and tsb > 0 else ""
+                    lines.append(f"  • ความสด (Form): {tsb_sign}{fmt(tsb, '', 1)}")
+    except Exception as e:
+        pass
 
     # --- สุขภาพรายวัน ---
     if health:
