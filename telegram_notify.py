@@ -334,10 +334,27 @@ def build_message(data):
             sport = sport_label(act.get("sport_type"))
             distance_km = (act.get("distance_m") or 0) / 1000
             
+            # เวลาที่ทำกิจกรรม (start_time)
+            start_time_str = act.get("start_time", "")
+            time_label = ""
+            if start_time_str:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+                    time_label = f" (เวลา {dt.strftime('%H:%M')})"
+                except:
+                    pass
+            
             # ข้อมูลพื้นฐานกิจกรรม
             dur = seconds_to_hm(act.get('duration_s'))
             hr_avg = fmt(act.get('avg_hr'), '', 0)
+            hr_max = fmt(act.get('max_hr'), '', 0)
             cals = fmt(act.get('calories'), ' kcal', 0)
+            
+            # แสดงระยะทางเฉพาะกีฬาที่มีการเคลื่อนที่ (วิ่ง/ปั่น/เดิน)
+            dist_label = ""
+            if act.get("sport_type") in ("100", "200", "900") and distance_km > 0:
+                dist_label = f"{fmt(distance_km, ' km', 2)} | "
             
             # ข้อมูลเชิงลึกของการวิ่ง/เดิน
             extra_stats = []
@@ -345,12 +362,15 @@ def build_message(data):
                 pace = format_pace(act.get('avg_pace_s'))
                 if pace: extra_stats.append(f"Pace {pace} /km")
                 if act.get('avg_cadence'): extra_stats.append(f"รอบขา {fmt(act.get('avg_cadence'), ' spm', 0)}")
-                if act.get('ascent_m'): extra_stats.append(f"ไต่เขา {fmt(act.get('ascent_m'), ' m', 0)}")
+                if act.get('ascent_m') and act.get('ascent_m') > 0: 
+                    extra_stats.append(f"ไต่เขา {fmt(act.get('ascent_m'), ' m', 0)}")
             
             score = act.get('score')
             perf_label = f" (Perf. {int(score)}%)" if score else ""
             
-            lines.append(f"  • {sport}{perf_label}: {fmt(distance_km, ' km', 2)} | {dur} | HR {hr_avg} | {cals}")
+            hr_range = f"HR {hr_avg}" if hr_max == "—" else f"HR {hr_avg}-{hr_max}"
+            
+            lines.append(f"  • {sport}{perf_label}{time_label}: {dist_label}{dur} | {hr_range} | {cals}")
             if extra_stats:
                 lines.append(f"    └ " + " | ".join(extra_stats))
     else:
@@ -378,7 +398,14 @@ def build_message(data):
                     lines.append("📈 <b>สถานะความฟิต</b>")
                     lines.append(f"  • ความฟิต (CTL): {fmt(ctl, '', 1)} | ล้า (ATL): {fmt(atl, '', 1)}")
                     tsb_sign = "+" if tsb and tsb > 0 else ""
-                    lines.append(f"  • ความสด (Form): {tsb_sign}{fmt(tsb, '', 1)}")
+                    form_label = ""
+                    if tsb is not None:
+                        if tsb > 10: form_label = " (พร้อมซ้อมหนัก/แข่ง)"
+                        elif tsb > 5: form_label = " (สดใส)"
+                        elif tsb > -5: form_label = " (สมดุล)"
+                        elif tsb > -15: form_label = " (ล้าเล็กน้อย)"
+                        else: form_label = " (ล้ามาก ควรพัก)"
+                    lines.append(f"  • ความสด (Form): {tsb_sign}{fmt(tsb, '', 1)}{form_label}")
     except Exception as e:
         pass
 
@@ -388,7 +415,15 @@ def build_message(data):
         lines.append("📊 <b>สุขภาพวันนี้</b>")
         lines.append(f"  👣 ก้าว: {fmt(health.get('steps'), '', 0)}")
         lines.append(f"  🔥 แคลอรี่รวม: {fmt(health.get('calories_burned'), ' kcal', 0)}")
-        lines.append(f"  😰 Stress: {fmt(health.get('stress_score'), '/100', 0)}")
+        
+        stress = health.get('stress_score')
+        stress_label = ""
+        if stress:
+            s_val = int(stress)
+            if s_val < 35: stress_label = " (ต่ำ/ผ่อนคลาย)"
+            elif s_val < 55: stress_label = " (ปานกลาง)"
+            else: stress_label = " (สูง)"
+        lines.append(f"  😰 Stress: {fmt(stress, '/100', 0)}{stress_label}")
         # ซ่อนบรรทัดนี้เมื่อไม่มีข้อมูลทั้งคู่ (sync ยังไม่เคยเก็บ avg/max HR รายวัน)
         if health.get("avg_hr") is not None or health.get("max_hr") is not None:
             lines.append(
@@ -409,6 +444,9 @@ def build_message(data):
     if sleep:
         lines.append("")
         sleep_date_str = sleep.get('date', '')
+        
+        # แสดงเวลาเข้านอน-ตื่น ถ้ามีข้อมูล
+        sleep_time_label = ""
         if normalize_date(sleep_date_str) == yesterday_str():
             lines.append("😴 <b>การนอน (เมื่อคืน)</b>")
         else:
