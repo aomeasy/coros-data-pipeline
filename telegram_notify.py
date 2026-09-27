@@ -299,6 +299,40 @@ def gather_today_summary():
         # คำนวณ Illness Risk
         illness_risk = sleep_analysis.compute_illness_risk(sleep_today, baselines)
 
+    # --- ดึงค่า Fitness (CTL/ATL/TSB) ล่าสุดจาก data.json ---
+    ctl_now = atl_now = tsb_now = None
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"),
+                  "r", encoding="utf-8") as f:
+            fitness = json.load(f).get("training_analytics", {}).get("fitness", {})
+            ctl_now, atl_now, tsb_now = fitness.get("ctl"), fitness.get("atl"), fitness.get("tsb")
+    except Exception:
+        pass
+
+    # --- บันทึกค่าวันนี้ลง time-series cache (prerequisite ของกฎ B1/B3/C3/E1/E2) ---
+    # ทำทุกครั้งที่รัน notify — ค่าเดิมที่ยังไม่มีวันนี้จะถูกเติม ส่วนค่าที่คำนวณไม่ได้จะไม่ทับของเดิม
+    if date:
+        dur = sleep_today.get("duration_min") if sleep_today else None
+        awake = (sleep_today.get("awake_min") or 0) if sleep_today else 0
+        eff = (dur / (dur + awake) * 100) if dur and (dur + awake) > 0 else None
+        coros_db.upsert_daily_metrics_cache({
+            "date": date,
+            "ctl": ctl_now,
+            "atl": atl_now,
+            "tsb": tsb_now,
+            "recovery_score": recovery_score.get("recovery_score") if recovery_score else None,
+            "sleep_efficiency": eff,
+            "sleep_duration_min": dur,
+            "hrv": sleep_today.get("hrv") if sleep_today else None,
+            "rhr": sleep_today.get("resting_hr") if sleep_today else None,
+            "stress": health_today.get("stress_score") if health_today else None,
+            "steps": health_today.get("steps") if health_today else None,
+            "calories": health_today.get("calories_burned") if health_today else None,
+        })
+
+    # --- ประวัติย้อนหลัง 30 วัน (เรียงเก่า -> ใหม่) สำหรับกฎที่ต้องดูแนวโน้ม ---
+    history = list(reversed(coros_db.get_daily_metrics_cache(days=30)))
+
     return {
         "date": date,
         "activities": activities,
@@ -311,12 +345,22 @@ def gather_today_summary():
         "recovery_score": recovery_score,
         "illness_risk": illness_risk,
         "baselines": baselines,
+        "fitness": {"ctl": ctl_now, "atl": atl_now, "tsb": tsb_now},
+        "history": history,
     }
 
 
 # =============================================================================
 # Message building
 # =============================================================================
+
+def load_user_config():
+    config_path = os.path.join(os.path.dirname(__file__), "user_config.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 def build_message(data):
     date = data["date"]
@@ -577,6 +621,9 @@ def build_message(data):
     
     stress_today = float(health.get("stress_score") or 0) if health else 0
     
+    # โหลด user_config (ถ้ามี)
+    user_config = load_user_config()
+    
     # ดึง form, ctl (จาก data.json) สำหรับกลุ่ม B
     form_val = None
     ctl_now = None
@@ -634,6 +681,60 @@ def build_message(data):
             hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
             if hrv_today < (hrv_baseline - hrv_std_dev):
                 insights.append(f"🟡 แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม")
+
+    history = data.get("history", [])
+    if history:
+        # กฎที่ต้องใช้ time-series (B1, B3, C3, E1, E2)
+        if len(history) >= 2:
+            # C3 — Stress สูง + Recovery เมื่อวานดี
+            yesterday_data = history[-2] if history[-1].get("date") == date else history[-1]
+            yesterday_rec = yesterday_data.get("recovery_score") or 0
+            if stress_today > 50 and yesterday_rec >= 70:
+                insights.append(f"🟡 Recovery เมื่อวานอยู่ในเกณฑ์ดี ({yesterday_rec:.0f}/100) แต่ความเครียดวันนี้ค่อนข้างสูง ({stress_today:.0f}/100) ระวังกระทบการนอนคืนนี้")
+
+        if len(history) >= 7:
+            # B3 — เทียบ CTL วันนี้กับ 7 วันก่อน
+            ctl_7d_ago = history[-7].get("ctl")
+            if ctl_now and ctl_7d_ago and ctl_now < ctl_7d_ago - 2:
+                insights.append(f"🟡 ความฟิต (CTL) ลดลงจาก {ctl_7d_ago:.1f} เป็น {ctl_now:.1f} ในรอบสัปดาห์ หากไม่ได้อยู่ในช่วง Taper หรือพักฟื้น ควรพิจารณาเพิ่ม Training Load")
+
+        if len(history) >= 5:
+            # B1 — Form สูงต่อเนื่อง + steps ต่ำ
+            form_high_days = sum(1 for d in history[-5:] if (d.get("tsb") or 0) > 10)
+            if form_high_days >= 5 and steps < 5000:
+                insights.append(f"🟡 Form เป็นบวกต่อเนื่องเกิน 5 วัน (ร่างกายสดชื่นมาก) แต่ก้าวเดินวันนี้น้อย ({steps:.0f} ก้าว) ระวังเข้าสู่ภาวะ Detraining (ความฟิตลด) หากไม่ได้ตั้งใจพัก")
+
+            # E2 — Sleep eff < 85% ต่อเนื่อง 5 วัน
+            bad_sleep_days = sum(1 for d in history[-5:] if d.get("sleep_efficiency") and d.get("sleep_efficiency") < 85)
+            if bad_sleep_days >= 5:
+                insights.append(f"🔴 Sleep Efficiency ต่ำกว่า 85% ติดต่อกัน 5 วัน คุณภาพการนอนแย่ลงสะสม แนะนำปรับสภาพแวดล้อมห้องนอนหรือลดสิ่งกระตุ้นก่อนนอน")
+                
+        if len(history) >= 3:
+            # E1 — Recovery ลดลงต่อเนื่อง 3 วัน
+            rec_trends = [d.get("recovery_score") or 0 for d in history[-3:]]
+            if rec_trends[0] > rec_trends[1] > rec_trends[2] and rec_trends[2] < 50:
+                insights.append(f"🔴 Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายกำลังดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก")
+
+    # กลุ่ม D: Goal-aware (ใช้ user_config)
+    if user_config:
+        goal = user_config.get("user_goal")
+        if goal == "improve_fitness":
+            if ctl_now and ctl_now > 50:
+                insights.append(f"🟢 ฟิตเนส (CTL) ของคุณเกิน 50 แล้ว ถือว่าอยู่ในเกณฑ์ที่ดีมากสำหรับการพัฒนาต่อเนื่อง")
+        elif goal == "race_prep":
+            race_date_str = user_config.get("race_date")
+            if race_date_str:
+                try:
+                    from datetime import datetime
+                    race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
+                    days_to_race = (race_dt - datetime.now()).days
+                    if 0 < days_to_race <= 14:
+                        if form_val is not None and form_val < 0:
+                            insights.append(f"🟡 เหลืออีก {days_to_race} วันจะถึงวันแข่ง แต่ Form ยังติดลบ ({form_val:.1f}) ควรเริ่ม Taper ลดปริมาณการซ้อมเพื่อให้ร่างกายสดชื่นทันวันแข่ง")
+                        else:
+                            insights.append(f"🟢 ใกล้วันแข่ง ({days_to_race} วัน) ร่างกายพักฟื้นพร้อม (Form เป็นบวก) รักษาระดับการซ้อมเบาๆ ไว้")
+                except Exception:
+                    pass
 
     # กลุ่ม E3 — ไม่มีความผิดปกติใดๆ
     if not insights and sleep and recovery:

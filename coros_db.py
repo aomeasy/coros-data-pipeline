@@ -155,6 +155,25 @@ def init_db():
             signals TEXT,
             created_at TEXT NOT NULL
         );
+
+        -- Phase 6: Daily metrics time-series (สำหรับกฎ B1, B3, C3, E1, E2)
+        -- เก็บค่าที่คำนวณได้แล้วของแต่ละวัน เพื่อดูแนวโน้มย้อนหลังได้โดยไม่ต้อง recompute
+        CREATE TABLE IF NOT EXISTS daily_metrics_cache (
+            date TEXT PRIMARY KEY,
+            ctl REAL,
+            atl REAL,
+            tsb REAL,
+            recovery_score REAL,
+            sleep_efficiency REAL,
+            sleep_duration_min REAL,
+            hrv REAL,
+            rhr REAL,
+            stress REAL,
+            steps INTEGER,
+            calories INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
     """)
     # Backward-compatible migration: ถ้า DB เดิมมี daily_health อยู่แล้วก่อนเพิ่มคอลัมน์นี้
     # (ตาราง CREATE TABLE IF NOT EXISTS จะไม่เติมคอลัมน์ใหม่ให้ของเดิมที่มีอยู่แล้ว)
@@ -410,14 +429,69 @@ def get_db_stats():
     sleep_count = conn.execute("SELECT COUNT(*) FROM sleep_data").fetchone()[0]
     daily_count = conn.execute("SELECT COUNT(*) FROM daily_health").fetchone()[0]
     strain_count = conn.execute("SELECT COUNT(*) FROM daily_strain").fetchone()[0]
+    metrics_count = conn.execute("SELECT COUNT(*) FROM daily_metrics_cache").fetchone()[0]
     conn.close()
     return {
         "activities": activities_count,
         "sleep_records": sleep_count,
         "daily_health": daily_count,
         "daily_strain": strain_count,
+        "daily_metrics": metrics_count,
         "db_path": str(DB_PATH)
     }
+
+def upsert_daily_metrics_cache(data):
+    """
+    บันทึกค่า metrics สรุปของวัน เพื่อให้พร้อมดึงมาวิเคราะห์แนวโน้มได้ทันที
+    data: dict ต้องมี date เป็นคีย์
+    """
+    if not data.get("date"):
+        return False
+    now = datetime.now().isoformat()
+    return _upsert("""
+        INSERT INTO daily_metrics_cache
+        (date, ctl, atl, tsb, recovery_score, sleep_efficiency, sleep_duration_min,
+         hrv, rhr, stress, steps, calories, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(date) DO UPDATE SET
+            ctl                = COALESCE(excluded.ctl, daily_metrics_cache.ctl),
+            atl                = COALESCE(excluded.atl, daily_metrics_cache.atl),
+            tsb                = COALESCE(excluded.tsb, daily_metrics_cache.tsb),
+            recovery_score     = COALESCE(excluded.recovery_score, daily_metrics_cache.recovery_score),
+            sleep_efficiency   = COALESCE(excluded.sleep_efficiency, daily_metrics_cache.sleep_efficiency),
+            sleep_duration_min = COALESCE(excluded.sleep_duration_min, daily_metrics_cache.sleep_duration_min),
+            hrv                = COALESCE(excluded.hrv, daily_metrics_cache.hrv),
+            rhr                = COALESCE(excluded.rhr, daily_metrics_cache.rhr),
+            stress             = COALESCE(excluded.stress, daily_metrics_cache.stress),
+            steps              = COALESCE(excluded.steps, daily_metrics_cache.steps),
+            calories           = COALESCE(excluded.calories, daily_metrics_cache.calories),
+            updated_at         = excluded.updated_at
+    """, (
+        data.get("date"),
+        data.get("ctl"),
+        data.get("atl"),
+        data.get("tsb"),
+        data.get("recovery_score"),
+        data.get("sleep_efficiency"),
+        data.get("sleep_duration_min"),
+        data.get("hrv"),
+        data.get("rhr"),
+        data.get("stress"),
+        data.get("steps"),
+        data.get("calories"),
+        now, now
+    ))
+
+def get_daily_metrics_cache(days=30):
+    """ดึงข้อมูล metrics cache เรียงตามวันที่ (ล่าสุดมาก่อน)"""
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM daily_metrics_cache
+        ORDER BY date DESC LIMIT ?
+    """, (days,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 
 def store_journal(data):
