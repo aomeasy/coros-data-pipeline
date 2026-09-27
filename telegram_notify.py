@@ -646,16 +646,16 @@ def build_message(data):
         # C1 — HRV ต่ำ + RHR สูง + Stress สูง
         if hrv_today < (hrv_baseline - hrv_std_dev) and rhr_today > (rhr_baseline + 5) and stress_today > 60:
             diff = rhr_today - rhr_baseline
-            insights.append(f"🔴 พบสัญญาณร่วมกันสามอย่าง: HRV ต่ำกว่าปกติ, Resting HR สูงกว่าค่าเฉลี่ย {diff:.0f} bpm, และ Stress สูง ({stress_today:.0f}/100) ชุดสัญญาณนี้มักปรากฏก่อนอาการเจ็บป่วยหรือ overtraining 1-2 วัน แนะนำให้ลด intensity และสังเกตอาการร่างกายใกล้ชิด")
+            insights.append({"id": "C1", "level": "🔴", "priority": 1, "text": f"พบสัญญาณร่วมกันสามอย่าง: HRV ต่ำกว่าปกติ, Resting HR สูงกว่าค่าเฉลี่ย {diff:.0f} bpm, และ Stress สูง ({stress_today:.0f}/100) ชุดสัญญาณนี้มักปรากฏก่อนอาการเจ็บป่วยหรือ overtraining 1-2 วัน แนะนำให้ลด intensity และสังเกตอาการร่างกายใกล้ชิด"})
             c_triggered = True
         # C2 — RHR สูงกว่า baseline อย่างเดียว
         elif rhr_today > (rhr_baseline + 5) and hrv_today >= (hrv_baseline - hrv_std_dev) and stress_today <= 60:
-            insights.append(f"🟢/🟡 Resting HR วันนี้สูงกว่าค่าเฉลี่ยเล็กน้อย ({rhr_today:.0f} vs baseline {rhr_baseline:.0f}) แต่ตัวชี้วัดอื่นยังปกติ อาจเป็นผลจากมื้ออาหาร แอลกอฮอล์ หรือความร้อนของอากาศ ยังไม่ถือเป็นสัญญาณเตือน")
+            insights.append({"id": "C2", "level": "🟢/🟡", "priority": 4, "text": f"Resting HR วันนี้สูงกว่าค่าเฉลี่ยเล็กน้อย ({rhr_today:.0f} vs baseline {rhr_baseline:.0f}) แต่ตัวชี้วัดอื่นยังปกติ อาจเป็นผลจากมื้ออาหาร แอลกอฮอล์ หรือความร้อนของอากาศ ยังไม่ถือเป็นสัญญาณเตือน"})
 
     # ประเมินกลุ่ม B: Training Load × Activity
     # B2 — Form ติดลบมาก + Recovery ต่ำ
     if form_val is not None and form_val < -20 and rec_score > 0 and rec_score < 60:
-        insights.append(f"🔴 Form ติดลบสูง ({form_val:.1f}) ร่วมกับ Recovery ต่ำ ({rec_score:.0f}) แสดงว่าร่างกายสะสมความล้าเกินกว่าที่ฟื้นตัวทัน ควรพิจารณาลด intensity หรือเพิ่มวันพักในสัปดาห์นี้ เพื่อป้องกัน overtraining")
+        insights.append({"id": "B2", "level": "🔴", "priority": 2, "text": f"Form ติดลบสูง ({form_val:.1f}) ร่วมกับ Recovery ต่ำ ({rec_score:.0f}) แสดงว่าร่างกายสะสมความล้าเกินกว่าที่ฟื้นตัวทัน ควรพิจารณาลด intensity หรือเพิ่มวันพักในสัปดาห์นี้ เพื่อป้องกัน overtraining"})
     
     # B4 — ข้อมูลกิจกรรมผิดปกติ (เช็คกิจกรรมทั้งหมดของวันนี้)
     if activities:
@@ -664,23 +664,23 @@ def build_message(data):
             a_cals = float(act.get("calories") or 0)
             if a_dur == 0 and a_cals > 50:
                 s_name = sport_label(act.get("sport_type"))
-                insights.append(f"🟡 กิจกรรม {s_name} วันนี้บันทึกระยะเวลา 0 นาทีแต่มีแคลอรี่ {a_cals:.0f} kcal ข้อมูลอาจไม่สมบูรณ์จากการซิงค์ ควรตรวจสอบก่อนใช้คำนวณ training load สะสม")
+                insights.append({"id": "B4", "level": "🟡", "priority": 3, "text": f"กิจกรรม {s_name} วันนี้บันทึกระยะเวลา 0 นาทีแต่มีแคลอรี่ {a_cals:.0f} kcal ข้อมูลอาจไม่สมบูรณ์จากการซิงค์ ควรตรวจสอบก่อนใช้คำนวณ training load สะสม"})
 
     # ประเมินกลุ่ม A: Recovery × Sleep
     if sleep and recovery and not c_triggered:
         # A1 — Recovery สูง + Sleep efficiency ต่ำ
         if rec_score >= 70 and efficiency > 0 and efficiency < 85:
-            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
+            insights.append({"id": "A1", "level": "🟡", "priority": 3, "text": f"แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({awake_min} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่"})
             
         # A2 — Deep sleep สูง + REM ต่ำ
         if deep_pct > 22 and rem_pct < 18:
-            insights.append(f"🟡 ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {deep_pct:.0f}%) แต่ REM ({rem_pct:.0f}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน")
+            insights.append({"id": "A2", "level": "🟡", "priority": 3, "text": f"ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {deep_pct:.0f}%) แต่ REM ({rem_pct:.0f}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน"})
             
         # A3 — HRV ต่ำกว่า baseline + Sleep ปกติ
         if hrv_today and hrv_baseline and efficiency >= 85:
             hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
             if hrv_today < (hrv_baseline - hrv_std_dev):
-                insights.append(f"🟡 แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม")
+                insights.append({"id": "A3", "level": "🟡", "priority": 3, "text": f"แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม"})
 
     history = data.get("history", [])
     if history:
@@ -690,13 +690,13 @@ def build_message(data):
             yesterday_data = history[-2] if history[-1].get("date") == date else history[-1]
             yesterday_rec = yesterday_data.get("recovery_score") or 0
             if stress_today > 60 and yesterday_rec >= 70:
-                insights.append(f"🟡 Recovery เมื่อวานอยู่ในเกณฑ์ดี ({yesterday_rec:.0f}/100) แต่ความเครียดวันนี้ค่อนข้างสูง ({stress_today:.0f}/100) ระวังกระทบการนอนคืนนี้")
+                insights.append({"id": "C3", "level": "🟡", "priority": 3, "text": f"Recovery เมื่อวานอยู่ในเกณฑ์ดี ({yesterday_rec:.0f}/100) แต่ความเครียดวันนี้ค่อนข้างสูง ({stress_today:.0f}/100) ระวังกระทบการนอนคืนนี้"})
 
         if len(history) >= 8:
             # B3 — เทียบ CTL วันนี้กับ 7 วันก่อน
             ctl_7d_ago = history[-8].get("ctl")
             if ctl_now and ctl_7d_ago and ctl_now < ctl_7d_ago - 3:
-                insights.append(f"🟡 ความฟิต (CTL) ลดลงจาก {ctl_7d_ago:.1f} เป็น {ctl_now:.1f} ในรอบสัปดาห์ หากไม่ได้อยู่ในช่วง Taper หรือพักฟื้น ควรพิจารณาเพิ่ม Training Load")
+                insights.append({"id": "B3", "level": "🟡", "priority": 3, "text": f"ความฟิต (CTL) ลดลงจาก {ctl_7d_ago:.1f} เป็น {ctl_now:.1f} ในรอบสัปดาห์ หากไม่ได้อยู่ในช่วง Taper หรือพักฟื้น ควรพิจารณาเพิ่ม Training Load"})
 
         if len(history) >= 5:
             # B1 — Form สูงต่อเนื่อง + steps ต่ำ
@@ -717,28 +717,28 @@ def build_message(data):
                         pass
 
             if form_high_days >= 5 and steps < 5000 and not is_taper:
-                insights.append(f"🟡 Form เป็นบวกต่อเนื่องเกิน 5 วัน (ร่างกายสดชื่นมาก) แต่ก้าวเดินวันนี้น้อย ({steps:.0f} ก้าว) ระวังเข้าสู่ภาวะ Detraining (ความฟิตลด) หากไม่ได้ตั้งใจพัก")
+                insights.append({"id": "B1", "level": "🟡", "priority": 3, "text": f"Form เป็นบวกต่อเนื่องเกิน 5 วัน (ร่างกายสดชื่นมาก) แต่ก้าวเดินวันนี้น้อย ({steps:.0f} ก้าว) ระวังเข้าสู่ภาวะ Detraining (ความฟิตลด) หากไม่ได้ตั้งใจพัก"})
 
             # E2 — Sleep eff < 85% ต่อเนื่อง 5 วัน
             bad_sleep_days = sum(1 for d in history[-5:] if d.get("sleep_efficiency") and d.get("sleep_efficiency") < 85)
             if bad_sleep_days >= 5:
-                insights.append(f"🔴 Sleep Efficiency ต่ำกว่า 85% ติดต่อกัน 5 วัน คุณภาพการนอนแย่ลงสะสม แนะนำปรับสภาพแวดล้อมห้องนอนหรือลดสิ่งกระตุ้นก่อนนอน")
+                insights.append({"id": "E2", "level": "🔴", "priority": 2, "text": f"Sleep Efficiency ต่ำกว่า 85% ติดต่อกัน 5 วัน คุณภาพการนอนแย่ลงสะสม แนะนำปรับสภาพแวดล้อมห้องนอนหรือลดสิ่งกระตุ้นก่อนนอน"})
                 
         if len(history) >= 3:
             # E1 — Recovery ลดลงต่อเนื่อง 3 วัน
             rec_trends = [d.get("recovery_score") or 0 for d in history[-3:]]
             if rec_trends[0] > rec_trends[1] > rec_trends[2]:
                 if len(history) >= 5 and sum(1 for i in range(len(history)-5, len(history)-1) if history[i].get("recovery_score") > history[i+1].get("recovery_score")) >= 4:
-                    insights.append(f"🔴 Recovery Score ลดลงติดต่อกัน 5 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายดิ่งสะสมมาก ควรพักการซ้อมหนักทันที")
+                    insights.append({"id": "E1_5", "level": "🔴", "priority": 1, "text": f"Recovery Score ลดลงติดต่อกัน 5 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายดิ่งสะสมมาก ควรพักการซ้อมหนักทันที"})
                 else:
-                    insights.append(f"🟡 Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ระวังร่างกายดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก")
+                    insights.append({"id": "E1_3", "level": "🟡", "priority": 3, "text": f"Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ระวังร่างกายดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก"})
 
     # กลุ่ม D: Goal-aware (ใช้ user_config)
     if user_config:
         goal = user_config.get("user_goal")
         if goal == "improve_fitness":
             if ctl_now and ctl_now > 50:
-                insights.append(f"🟢 ฟิตเนส (CTL) ของคุณเกิน 50 แล้ว ถือว่าอยู่ในเกณฑ์ที่ดีมากสำหรับการพัฒนาต่อเนื่อง")
+                insights.append({"id": "D1", "level": "🟢", "priority": 4, "text": f"ฟิตเนส (CTL) ของคุณเกิน 50 แล้ว ถือว่าอยู่ในเกณฑ์ที่ดีมากสำหรับการพัฒนาต่อเนื่อง"})
         elif goal == "race_prep":
             race_date_str = user_config.get("race_date")
             if race_date_str:
@@ -748,25 +748,31 @@ def build_message(data):
                     days_to_race = (race_dt - datetime.now()).days
                     if 0 < days_to_race <= 14:
                         if form_val is not None and form_val < 0:
-                            insights.append(f"🟡 เหลืออีก {days_to_race} วันจะถึงวันแข่ง แต่ Form ยังติดลบ ({form_val:.1f}) ควรเริ่ม Taper ลดปริมาณการซ้อมเพื่อให้ร่างกายสดชื่นทันวันแข่ง")
+                            insights.append({"id": "D2_taper", "level": "🟡", "priority": 3, "text": f"เหลืออีก {days_to_race} วันจะถึงวันแข่ง แต่ Form ยังติดลบ ({form_val:.1f}) ควรเริ่ม Taper ลดปริมาณการซ้อมเพื่อให้ร่างกายสดชื่นทันวันแข่ง"})
                         else:
-                            insights.append(f"🟢 ใกล้วันแข่ง ({days_to_race} วัน) ร่างกายพักฟื้นพร้อม (Form เป็นบวก) รักษาระดับการซ้อมเบาๆ ไว้")
+                            insights.append({"id": "D2_ready", "level": "🟢", "priority": 4, "text": f"ใกล้วันแข่ง ({days_to_race} วัน) ร่างกายพักฟื้นพร้อม (Form เป็นบวก) รักษาระดับการซ้อมเบาๆ ไว้"})
                 except Exception:
                     pass
 
     # กลุ่ม E3 — ไม่มีความผิดปกติใดๆ
     if not insights and sleep and recovery:
         if rec_score >= 70 and efficiency >= 85:
-            insights.append(f"🟢 การฟื้นฟูและการนอนหลับสมดุลดีเยี่ยม (Recovery {rec_score:.0f}/100, Efficiency {efficiency:.0f}%) ร่างกายฟื้นตัวได้เต็มที่ทั้งทางกายและระบบประสาท พร้อมรับการซ้อม")
+            insights.append({"id": "E3_perfect", "level": "🟢", "priority": 5, "text": f"การฟื้นฟูและการนอนหลับสมดุลดีเยี่ยม (Recovery {rec_score:.0f}/100, Efficiency {efficiency:.0f}%) ร่างกายฟื้นตัวได้เต็มที่ทั้งทางกายและระบบประสาท พร้อมรับการซ้อม"})
         elif rec_score >= 40:
-            insights.append(f"🟢 วันนี้ทุกตัวชี้วัดอยู่ในเกณฑ์ปกติเมื่อเทียบกับค่าเฉลี่ยของคุณเอง ไม่มีสิ่งที่ต้องปรับ ฝึกตามแผนได้ตามปกติ")
+            insights.append({"id": "E3_normal", "level": "🟢", "priority": 5, "text": f"วันนี้ทุกตัวชี้วัดอยู่ในเกณฑ์ปกติเมื่อเทียบกับค่าเฉลี่ยของคุณเอง ไม่มีสิ่งที่ต้องปรับ ฝึกตามแผนได้ตามปกติ"})
 
     if insights:
+        # Sort insights by priority (1 is highest)
+        insights.sort(key=lambda x: x.get("priority", 99) if isinstance(x, dict) else 99)
+        
         lines.append("")
         lines.append("💡 <b>บทวิเคราะห์เชิงลึก (Recovery × Sleep × Load)</b>")
         # กรองแสดงผลแค่สูงสุด 3 ข้อความ เพื่อไม่ให้เกิด alert fatigue
         for ins in insights[:3]:
-            lines.append(f"  • {ins}")
+            if isinstance(ins, dict):
+                lines.append(f"  • {ins['level']} {ins['text']}")
+            else:
+                lines.append(f"  • {ins}")
 
     # --- Journal (manual) ---
     if journal:
