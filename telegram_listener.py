@@ -24,7 +24,7 @@ GITHUB_TOKEN = os.environ.get("GH_PAT") or os.environ.get("GITHUB_TOKEN")
 REPO = os.environ.get("GITHUB_REPOSITORY")
 
 # คำสั่งที่ถือว่า "สั่งให้ซิงค์" — เป็นคำธรรมดา ไม่ขึ้นต้นด้วย /
-SYNC_COMMANDS = {"sync", "/sync", "อัปเดท", "อัพเดท", "ซิงค์", "syncnow", "อัปเดต"}
+SYNC_COMMANDS = {"/synccoros", "synccoros"}
 
 # ข้อความเก่ากว่านี้วินาที = ไม่นับ (กันเผลอรันซ้ำจากคิวค้าง)
 MAX_AGE_SEC = 300
