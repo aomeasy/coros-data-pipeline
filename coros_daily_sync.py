@@ -347,30 +347,33 @@ def sync_sleep_and_health(days=7):
         if m:
             sleep_rec["sleepScore"] = int(m.group(1))
         
-        m = re.search(r'Main Sleep:\s*([\d+h\s]+\d+min)', content)
-        if m:
-            sleep_rec["duration"] = parse_duration(m.group(1))
-        
-        m = re.search(r'Deep Sleep Ratio:\s*([\d.]+)%', content)
-        if m:
-            sleep_rec["deep_sleep_pct"] = float(m.group(1))
-        
-        m = re.search(r'Light Sleep Ratio:\s*([\d.]+)%', content)
-        if m:
-            sleep_rec["light_sleep_pct"] = float(m.group(1))
-        
-        m = re.search(r'REM Ratio:\s*([\d.]+)%', content)
-        if m:
-            sleep_rec["rem_sleep_pct"] = float(m.group(1))
-        
-        m = re.search(r'Awake Time:\s*(\d+)\s*min', content)
-        if m:
-            sleep_rec["awake_min"] = int(m.group(1))
-        
-        m = re.search(r'Naps Total:\s*(\d+)\s*min', content)
-        if m:
-            sleep_rec["nap_min"] = int(m.group(1))
-        
+        # Parse Sleep Summary: Total: 5h 20min | Deep: 1h 6min | Light: 3h 11min | REM: 56 min
+        if "Sleep Summary:" in content:
+            m = re.search(r'Total:\s*([\d+h\s]+min|[\d+h]+)', content)
+            if m:
+                sleep_rec["duration"] = parse_duration(m.group(1))
+                
+            # Calculate ratio by manual duration parsing
+            m_deep = re.search(r'Deep:\s*([\d+h\s]+min|[\d+h]+)', content)
+            if m_deep and sleep_rec.get("duration", 0) > 0:
+                d_min = parse_duration(m_deep.group(1))
+                sleep_rec["deep_sleep_pct"] = round(d_min / sleep_rec["duration"] * 100, 1)
+
+            m_light = re.search(r'Light:\s*([\d+h\s]+min|[\d+h]+)', content)
+            if m_light and sleep_rec.get("duration", 0) > 0:
+                l_min = parse_duration(m_light.group(1))
+                sleep_rec["light_sleep_pct"] = round(l_min / sleep_rec["duration"] * 100, 1)
+
+            m_rem = re.search(r'REM:\s*([\d+h\s]+min|[\d+h]+)', content)
+            if m_rem and sleep_rec.get("duration", 0) > 0:
+                r_min = parse_duration(m_rem.group(1))
+                sleep_rec["rem_sleep_pct"] = round(r_min / sleep_rec["duration"] * 100, 1)
+                
+            m_awa = re.search(r'Awake?[:\s]*([\d+h\s]+min|\d+\s*min)', content)
+            if m_awa:
+                sleep_rec["awake_min"] = parse_duration(m_awa.group(1))
+                
+        # HRV
         m = re.search(r'HRV:\s*(\d+)\s*ms', content)
         if m:
             sleep_rec["hrv"] = int(m.group(1))
