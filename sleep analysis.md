@@ -518,18 +518,18 @@ def generate_weekly_report(records: list, journals: list) -> str:
 
 ---
 
-## 11. ลำดับการ implement แนะนำ
+## 12. บทเรียนจากการ Debug & การซ่อมข้อมูล (2026-09-27)
 
-1. Loader: normalize ข้อมูลจาก COROS MCP → schema ข้อ 0 (รวม spo2/skin_temp/rem จริง)
-2. สร้างหน้า Journal input (ดู UI ที่แนบมาให้) — เก็บลง DB/Sheets แยกตาราง เชื่อมด้วย `date`
-3. Implement ข้อ 1, 4, 5 (basic + spo2 + skin temp) — ใช้ได้ทันทีไม่ต้องรอ baseline
-4. เก็บข้อมูลสะสม ≥30 วัน แล้วเปิดข้อ 2, 6 (baseline-dependent)
-5. เก็บ journal ควบคู่ไป ≥2-3 สัปดาห์ก่อนเปิดข้อ 7 (correlation ต้องการ sample ≥3 ต่อกลุ่ม)
-6. ข้อ 8 (correlation กับ training load) ต้องการข้อมูล ≥30-60 วัน
-7. ต่อข้อ 9-10 เข้า Telegram/Sheets ตาม pipeline เดิม
+- **ปัญหา:** ข้อมูลการนอนแสดงใน Telegram และหน้าเว็บเป็น 0m หรือ `- / - / -`
+- **สาเหตุ:**
+  1. `coros-mcp` มีการเปลี่ยนข้อความส่วน `queryDailyHealthData` กลับไปกลับมา 
+     เดิมส่งเป็น `Main Sleep: Xh Ymin`, `Deep Sleep Ratio: Z%`
+     แต่ของล่าสุดที่ได้จะเป็นบรรทัดเดียวแบบสรุป: `Total: Xh Ymin | Deep: Ah Bmin | Light: Ch Dmin | REM: Eh Fmin | Awa(ke)`
+  2. ทำให้ Regex เดิมหาบรรทัด `Main Sleep:` หรือ `... Ratio:` ไม่เจอ จึงได้ค่า 0 ไปบันทึกใน SQLite
+- **วิธีแก้:** 
+  - ซ่อม `coros_daily_sync.py` ให้เช็คถ้าเจอ `Sleep Summary:` ให้ใช้ Regex ควานหา `Total:`, `Deep:`, `Light:`, `REM:`, `Awake:` แทน (ดึง duration มาแล้วหารด้วย Total ให้เป็น Ratio เอง)
+- **ข้อควรระวังในอนาคต:** 
+  - โค้ดดึงข้อมูลใช้วิธี Parse string จาก `coros-mcp` โดยตรง ถ้า `mcp` อัปเดตและ format string เปลี่ยน ต้องมาแก้ Regex ใหม่
 
----
-
-## หมายเหตุสำคัญ
 - ทุกสูตรเป็น **heuristic/statistical** ไม่ใช่การวินิจฉัยทางการแพทย์ โดยเฉพาะ SpO2/Skin Temp ที่อาจสัมพันธ์กับปัญหาสุขภาพ — flag เหล่านี้คือ "ควรสังเกต" ไม่ใช่ "เป็นโรค"
 - Coefficient (weight ใน recovery score, threshold ต่างๆ) เป็นค่าตั้งต้น ควร **calibrate ด้วยข้อมูลจริงของตัวเอง** เมื่อสะสมได้ ≥60 วัน
