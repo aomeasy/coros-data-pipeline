@@ -554,49 +554,99 @@ def build_message(data):
         lines.append(f"  TRIMP: {fmt(strain.get('trimp'), '', 1)}")
         lines.append(acwr_line(strain.get("acwr"), data.get("history_days")))
 
-    # --- บทวิเคราะห์เชิงลึก (Recovery x Sleep) ---
+    # --- บทวิเคราะห์เชิงลึก (Insight Analysis) ---
     insights = []
-    if sleep and recovery:
-        rec_score = recovery.get("recovery_score") or 0
-        duration_min = sleep.get("duration_min") or 0
-        awake_min = sleep.get("awake_min") or 0
-        total_bed_time = duration_min + awake_min
-        efficiency = (duration_min / total_bed_time * 100) if total_bed_time > 0 else 0
+    
+    # ดึงค่าที่จำเป็นสำหรับกลุ่มต่างๆ
+    rec_score = recovery.get("recovery_score") if recovery else 0
+    duration_min = sleep.get("duration_min") if sleep else 0
+    awake_min = sleep.get("awake_min") if sleep else 0
+    total_bed_time = duration_min + awake_min
+    efficiency = (duration_min / total_bed_time * 100) if total_bed_time > 0 else 0
+    
+    deep_pct = sleep.get("deep_sleep_pct") if sleep else 0
+    rem_pct = sleep.get("rem_sleep_pct") if sleep else 0
+    
+    hrv_today = sleep.get("hrv") if sleep else None
+    baselines_dict = data.get("baselines", {})
+    hrv_baseline_raw = baselines_dict.get("hrv_ms")
+    hrv_baseline = hrv_baseline_raw.get("baseline") if isinstance(hrv_baseline_raw, dict) else hrv_baseline_raw
+    rhr_today = sleep.get("resting_hr") if sleep else None
+    rhr_baseline_raw = baselines_dict.get("resting_hr")
+    rhr_baseline = rhr_baseline_raw.get("baseline") if isinstance(rhr_baseline_raw, dict) else rhr_baseline_raw
+    
+    stress_today = float(health.get("stress_score") or 0) if health else 0
+    
+    # ดึง form, ctl (จาก data.json) สำหรับกลุ่ม B
+    form_val = None
+    ctl_now = None
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"), "r", encoding="utf-8") as f:
+            full_data = json.load(f)
+            fitness = full_data.get("training_analytics", {}).get("fitness", {})
+            form_val = fitness.get("tsb")
+            ctl_now = fitness.get("ctl")
+    except Exception:
+        pass
         
-        deep_pct = sleep.get("deep_sleep_pct") or 0
-        rem_pct = sleep.get("rem_sleep_pct") or 0
-        
-        hrv_today = sleep.get("hrv")
-        baselines_dict = data.get("baselines", {})
-        hrv_baseline_raw = baselines_dict.get("hrv_ms")
-        hrv_baseline = hrv_baseline_raw.get("baseline") if isinstance(hrv_baseline_raw, dict) else hrv_baseline_raw
-        
+    steps = float(health.get("steps") or 0) if health else 0
+
+    # ประเมินตามกลุ่ม C: HRV × Stress × RHR (Illness/Overtraining Early Warning)
+    c_triggered = False
+    if hrv_today and hrv_baseline and rhr_today and rhr_baseline:
+        hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
+        # C1 — HRV ต่ำ + RHR สูง + Stress สูง
+        if hrv_today < (hrv_baseline - hrv_std_dev) and rhr_today > (rhr_baseline + 5) and stress_today > 60:
+            diff = rhr_today - rhr_baseline
+            insights.append(f"🔴 พบสัญญาณร่วมกันสามอย่าง: HRV ต่ำกว่าปกติ, Resting HR สูงกว่าค่าเฉลี่ย {diff:.0f} bpm, และ Stress สูง ({stress_today:.0f}/100) ชุดสัญญาณนี้มักปรากฏก่อนอาการเจ็บป่วยหรือ overtraining 1-2 วัน แนะนำให้ลด intensity และสังเกตอาการร่างกายใกล้ชิด")
+            c_triggered = True
+        # C2 — RHR สูงกว่า baseline อย่างเดียว
+        elif rhr_today > (rhr_baseline + 5) and hrv_today >= (hrv_baseline - hrv_std_dev) and stress_today <= 60:
+            insights.append(f"🟢/🟡 Resting HR วันนี้สูงกว่าค่าเฉลี่ยเล็กน้อย ({rhr_today:.0f} vs baseline {rhr_baseline:.0f}) แต่ตัวชี้วัดอื่นยังปกติ อาจเป็นผลจากมื้ออาหาร แอลกอฮอล์ หรือความร้อนของอากาศ ยังไม่ถือเป็นสัญญาณเตือน")
+
+    # ประเมินกลุ่ม B: Training Load × Activity
+    # B2 — Form ติดลบมาก + Recovery ต่ำ
+    if form_val is not None and form_val < -20 and rec_score > 0 and rec_score < 60:
+        insights.append(f"🔴 Form ติดลบสูง ({form_val:.1f}) ร่วมกับ Recovery ต่ำ ({rec_score:.0f}) แสดงว่าร่างกายสะสมความล้าเกินกว่าที่ฟื้นตัวทัน ควรพิจารณาลด intensity หรือเพิ่มวันพักในสัปดาห์นี้ เพื่อป้องกัน overtraining")
+    
+    # B4 — ข้อมูลกิจกรรมผิดปกติ (เช็คกิจกรรมทั้งหมดของวันนี้)
+    if activities:
+        for act in activities:
+            a_dur = float(act.get("duration_s") or 0) / 60.0
+            a_cals = float(act.get("calories") or 0)
+            if a_dur == 0 and a_cals > 50:
+                s_name = sport_label(act.get("sport_type"))
+                insights.append(f"🟡 กิจกรรม {s_name} วันนี้บันทึกระยะเวลา 0 นาทีแต่มีแคลอรี่ {a_cals:.0f} kcal ข้อมูลอาจไม่สมบูรณ์จากการซิงค์ ควรตรวจสอบก่อนใช้คำนวณ training load สะสม")
+
+    # ประเมินกลุ่ม A: Recovery × Sleep
+    if sleep and recovery and not c_triggered:
         # A1 — Recovery สูง + Sleep efficiency ต่ำ
-        if rec_score >= 70 and efficiency < 85:
+        if rec_score >= 70 and efficiency > 0 and efficiency < 85:
             wasted = total_bed_time - duration_min
-            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({fmt(rec_score, '', 0)}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({fmt(efficiency, '', 0)}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({int(wasted)} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
+            insights.append(f"🟡 แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({int(wasted)} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่")
             
         # A2 — Deep sleep สูง + REM ต่ำ
         if deep_pct > 22 and rem_pct < 18:
-            insights.append(f"🟡 ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {fmt(deep_pct, '', 0)}%) แต่ REM ({fmt(rem_pct, '', 0)}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน")
+            insights.append(f"🟡 ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {deep_pct:.0f}%) แต่ REM ({rem_pct:.0f}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน")
             
         # A3 — HRV ต่ำกว่า baseline + Sleep ปกติ
         if hrv_today and hrv_baseline and efficiency >= 85:
-            std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
-            if hrv_today < (hrv_baseline - std_dev):
-                insights.append(f"🟡 แม้จะนอนได้ดีคืนนี้ แต่ HRV ({fmt(hrv_today, '', 0)}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({fmt(hrv_baseline, '', 0)}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม")
+            hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
+            if hrv_today < (hrv_baseline - hrv_std_dev):
+                insights.append(f"🟡 แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม")
 
-        # กรณีปกติ ไม่มีจุดต้องระวังเตือน
-        if not insights:
-            if rec_score >= 70 and efficiency >= 85:
-                insights.append(f"🟢 การฟื้นฟูและการนอนหลับสมดุลดีเยี่ยม (Recovery {fmt(rec_score, '', 0)}/100, Efficiency {fmt(efficiency, '', 0)}%) ร่างกายฟื้นตัวได้เต็มที่ทั้งทางกายและระบบประสาท พร้อมรับการซ้อม")
-            elif rec_score >= 40:
-                insights.append(f"🟢 การฟื้นฟูอยู่ในเกณฑ์ปกติ รักษารูปแบบการนอนและสังเกตความล้าสะสมตามความรู้สึกจริง")
+    # กลุ่ม E3 — ไม่มีความผิดปกติใดๆ
+    if not insights and sleep and recovery:
+        if rec_score >= 70 and efficiency >= 85:
+            insights.append(f"🟢 การฟื้นฟูและการนอนหลับสมดุลดีเยี่ยม (Recovery {rec_score:.0f}/100, Efficiency {efficiency:.0f}%) ร่างกายฟื้นตัวได้เต็มที่ทั้งทางกายและระบบประสาท พร้อมรับการซ้อม")
+        elif rec_score >= 40:
+            insights.append(f"🟢 วันนี้ทุกตัวชี้วัดอยู่ในเกณฑ์ปกติเมื่อเทียบกับค่าเฉลี่ยของคุณเอง ไม่มีสิ่งที่ต้องปรับ ฝึกตามแผนได้ตามปกติ")
 
     if insights:
         lines.append("")
-        lines.append("💡 <b>บทวิเคราะห์เชิงลึก (Recovery × Sleep)</b>")
-        for ins in insights:
+        lines.append("💡 <b>บทวิเคราะห์เชิงลึก (Recovery × Sleep × Load)</b>")
+        # กรองแสดงผลแค่สูงสุด 3 ข้อความ เพื่อไม่ให้เกิด alert fatigue
+        for ins in insights[:3]:
             lines.append(f"  • {ins}")
 
     # --- Journal (manual) ---
