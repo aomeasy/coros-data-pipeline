@@ -394,6 +394,11 @@ def sync_sleep_and_health(days=7):
             sleep_rec["hrv"] = int(m.group(1))
         elif date_str in hrv_by_date:
             sleep_rec["hrv"] = hrv_by_date[date_str]
+            
+        # Resting HR / Min HR from Sleep
+        m_hr = re.search(r'Min\s*(\d+)\s*bpm', content)
+        if m_hr:
+            sleep_rec["restingHeartRate"] = int(m_hr.group(1))
 
         if "Sleep Summary:" in content:
             if coros_db.store_sleep(sleep_rec):
