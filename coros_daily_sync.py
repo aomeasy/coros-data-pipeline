@@ -227,15 +227,20 @@ def sync_activities():
         if m:
             activity["sportType"] = int(m.group(1))
 
-        m = re.search(r'Duration:\s*([\d:]+)\s*\|\s*Distance:\s*([\d.]+)\s*km', full_text)
-        if m:
-            dur_str = m.group(1)
+        # Parse Duration (แยกเดี่ยวๆ เผื่อกีฬาที่ไม่มีระยะทาง)
+        m_dur = re.search(r'Duration:\s*([\d:]+)', full_text)
+        if m_dur:
+            dur_str = m_dur.group(1)
             parts = dur_str.split(":")
             if len(parts) == 2:
                 activity["duration"] = int(parts[0]) * 60 + int(parts[1])
             elif len(parts) == 3:
                 activity["duration"] = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-            activity["distance"] = float(m.group(2)) * 1000
+                
+        # Parse Distance (ถ้ามี)
+        m_dist = re.search(r'Distance:\s*([\d.]+)\s*km', full_text)
+        if m_dist:
+            activity["distance"] = float(m_dist.group(1)) * 1000
 
         m = re.search(r'Average Pace:\s*([\d:]+\s*/km)', full_text)
         if m:
