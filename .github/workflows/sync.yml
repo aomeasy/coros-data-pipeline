@@ -2,8 +2,9 @@ name: COROS Daily Sync
 
 on:
   schedule:
-    - cron: '0 0 * * *'   # 7:00 AM ICT = 0:00 UTC
-    - cron: '0 13 * * *'  # 8:00 PM ICT = 13:00 UTC
+    - cron: '30 23 * * *'  # 06:30 ICT = 23:30 UTC (วันก่อนหน้า)
+    - cron: '0 11 * * *'   # 18:00 ICT = 11:00 UTC
+    - cron: '0 15 * * *'   # 22:00 ICT = 15:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -39,25 +40,31 @@ jobs:
           COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
           PYTHONIOENCODING: utf-8
         run: python coros_daily_sync.py
-        
+
       - name: Compute Strain / ACWR
         env:
           PYTHONIOENCODING: utf-8
         run: python run_strain.py
-        
+
       - name: Export to JSON
         run: python export.py
-        
+
       - name: Send Telegram Summary
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           PYTHONIOENCODING: utf-8
         run: python telegram_notify.py
-        
+
       - name: Commit DB + docs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -f coros_cache.db docs/data.json
-          if (git diff --cached --quiet) { echo "No changes" } else { git commit -m "Sync $(date -u +%Y-%m-%dT%H:%M:%SZ)"; git push }
+          if (git diff --cached --quiet) {
+            echo "No changes"
+          } else {
+            $ts = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            git commit -m "Sync $ts"
+            git push
+          }
