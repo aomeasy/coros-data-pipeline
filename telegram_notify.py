@@ -336,6 +336,8 @@ def gather_today_summary():
     # --- หนี้การนอน (เป้านอนปรับได้ใน user_config.json: "sleep_target_min") ---
     sleep_target = load_user_config().get("sleep_target_min", SLEEP_TARGET_MIN)
     sleep_debt = calc_sleep_debt(sleep_rows, date, target_min=sleep_target)
+    
+    weekly_load = calc_weekly_load(all_recent_activities, date)
 
     return {
         "date": date,
@@ -352,6 +354,7 @@ def gather_today_summary():
         "fitness": {"ctl": ctl_now, "atl": atl_now, "tsb": tsb_now},
         "history": history,
         "sleep_debt": sleep_debt,
+        "weekly_load": weekly_load,
     }
 
 
@@ -494,6 +497,100 @@ def sleep_debt_line(sd):
     return (f"  💤 หนี้การนอน 7 วัน: {minutes_to_hm(debt)}{label}{note}"
             f" | เฉลี่ย {minutes_to_hm(sd['avg_min'])}/คืน")
 
+WEEKLY_MIN_BASE_KM = 5        # สัปดาห์ก่อนต้องวิ่งอย่างน้อยเท่านี้ถึงจะคิด %
+
+
+def calc_weekly_load(activities, today):
+    """
+    สรุปภาระซ้อม 7 วันล่าสุด (รวมวันนี้) เทียบ 7 วันก่อนหน้านั้น
+    ระยะทางนับเฉพาะวิ่ง (sport_type 100) ส่วนเวลา/วัน/ครั้ง นับทุกกีฬา
+    """
+    try:
+        end = datetime.strptime(today, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    this_start = end - timedelta(days=6)
+    prev_start = end - timedelta(days=13)
+    prev_end = end - timedelta(days=7)
+
+    def empty():
+        return {"run_km": 0.0, "dur_s": 0.0, "days": set(), "sessions": 0}
+
+    cur, prev = empty(), empty()
+    first_day = None
+
+    for a in activities or []:
+        d = normalize_date(a.get("start_time"))
+        if not d:
+            continue
+        try:
+            day = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if first_day is None or day < first_day:
+            first_day = day
+
+        if this_start <= day <= end:
+            b = cur
+        elif prev_start <= day <= prev_end:
+            b = prev
+        else:
+            continue
+
+        b["sessions"] += 1
+        b["days"].add(day)
+        b["dur_s"] += float(a.get("duration_s") or 0)
+        if str(a.get("sport_type")) == "100":
+            b["run_km"] += float(a.get("distance_m") or 0) / 1000
+
+    if first_day is None:
+        return None
+    return {
+        "cur": cur,
+        "prev": prev,
+        "has_prev": first_day <= prev_start,   # ข้อมูลในระบบย้อนไปถึงสัปดาห์ก่อนแล้วหรือยัง
+    }
+
+
+def weekly_load_lines(wl):
+    """แปลงผล calc_weekly_load เป็นบรรทัดข้อความ (คืน None ถ้าไม่มีข้อมูล)"""
+    if not wl:
+        return None
+    cur, prev = wl["cur"], wl["prev"]
+    if cur["sessions"] == 0:
+        return ["", "📅 <b>ภาระซ้อม 7 วัน</b>", "  ยังไม่มีกิจกรรมใน 7 วันที่ผ่านมา"]
+
+    lines = ["", "📅 <b>ภาระซ้อม 7 วัน</b>"]
+
+    # ระยะวิ่ง + เปรียบเทียบสัปดาห์ก่อน
+    if cur["run_km"] > 0:
+        cmp_txt = ""
+        if wl["has_prev"] and prev["run_km"] >= WEEKLY_MIN_BASE_KM:
+            pct = (cur["run_km"] - prev["run_km"]) / prev["run_km"] * 100
+            sign = "+" if pct > 0 else ""
+            if pct > 20:
+                flag = " 🔴 เพิ่มเร็วเกินไป"
+            elif pct > 10:
+                flag = " 🟡 เพิ่มเร็ว"
+            elif pct < -30:
+                flag = " 🔵 ลดลงมาก"
+            else:
+                flag = " ✅"
+            cmp_txt = f" ({sign}{pct:.0f}% จากสัปดาห์ก่อน {prev['run_km']:.1f} km){flag}"
+        elif not wl["has_prev"]:
+            cmp_txt = " (ยังไม่มีข้อมูลสัปดาห์ก่อนให้เทียบ)"
+        lines.append(f"  🏃 วิ่งรวม: {cur['run_km']:.1f} km{cmp_txt}")
+
+    # เวลารวม + วันที่ซ้อม
+    dur_txt = seconds_to_hm(cur["dur_s"])
+    if wl["has_prev"] and prev["dur_s"] > 0:
+        pct_t = (cur["dur_s"] - prev["dur_s"]) / prev["dur_s"] * 100
+        dur_txt += f" ({'+' if pct_t > 0 else ''}{pct_t:.0f}%)"
+    lines.append(
+        f"  ⏱ เวลารวม: {dur_txt} | ซ้อม {len(cur['days'])} วัน ({cur['sessions']} ครั้ง)"
+    )
+    return lines
+
 def build_message(data):
     date = data["date"]
     activities = data["activities"]
@@ -595,6 +692,11 @@ def build_message(data):
 
     except Exception as e:
         pass
+
+    # --- ภาระซ้อมรายสัปดาห์ ---
+    wl_lines = weekly_load_lines(data.get("weekly_load"))
+    if wl_lines:
+        lines.extend(wl_lines)
 
     # --- สุขภาพรายวัน ---
     if health:
