@@ -333,6 +333,10 @@ def gather_today_summary():
     # --- ประวัติย้อนหลัง 30 วัน (เรียงเก่า -> ใหม่) สำหรับกฎที่ต้องดูแนวโน้ม ---
     history = list(reversed(coros_db.get_daily_metrics_cache(days=30)))
 
+    # --- หนี้การนอน (เป้านอนปรับได้ใน user_config.json: "sleep_target_min") ---
+    sleep_target = load_user_config().get("sleep_target_min", SLEEP_TARGET_MIN)
+    sleep_debt = calc_sleep_debt(sleep_rows, date, target_min=sleep_target)
+
     return {
         "date": date,
         "activities": activities,
@@ -347,6 +351,7 @@ def gather_today_summary():
         "baselines": baselines,
         "fitness": {"ctl": ctl_now, "atl": atl_now, "tsb": tsb_now},
         "history": history,
+        "sleep_debt": sleep_debt,
     }
 
 
@@ -427,6 +432,67 @@ def training_recommendation(data):
         f"  {detail}",
         f"  เหตุผล: {' • '.join(reasons)}",
     ]
+
+SLEEP_TARGET_MIN = 480        # เป้านอน 8 ชม.
+SLEEP_DEBT_WINDOW = 7         # ดูย้อนหลัง 7 วัน
+SLEEP_DEBT_MIN_NIGHTS = 4     # ต้องมีข้อมูลอย่างน้อย 4 คืนถึงจะประเมิน
+
+
+def calc_sleep_debt(sleep_rows, today, target_min=SLEEP_TARGET_MIN,
+                    window=SLEEP_DEBT_WINDOW):
+    """
+    รวมเวลานอนที่ขาดจากเป้าในช่วง `window` วันล่าสุด (นับเฉพาะคืนที่นอนน้อยกว่าเป้า)
+    คืนค่า dict: nights = จำนวนคืนที่มีข้อมูล, debt_min = นาทีที่ค้าง, avg_min = เฉลี่ยต่อคืน
+    debt_min เป็น None ถ้าข้อมูลไม่พอ
+    """
+    try:
+        end = datetime.strptime(today, "%Y-%m-%d")
+    except ValueError:
+        return None
+    start = end - timedelta(days=window - 1)
+
+    nights = {}   # ใช้ dict ตามวันที่ กัน record ซ้ำที่เก็บคนละรูปแบบวันที่
+    for r in sleep_rows or []:
+        d = normalize_date(r.get("date"))
+        dur = r.get("duration_min")
+        if not d or not dur:          # ไม่มีข้อมูล หรือ 0 = ไม่ได้ใส่นาฬิกา ข้าม
+            continue
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+            nights[d] = float(dur)
+        except (ValueError, TypeError):
+            continue
+        if not (start <= dt <= end):
+            nights.pop(d, None)
+
+    if len(nights) < SLEEP_DEBT_MIN_NIGHTS:
+        return {"nights": len(nights), "debt_min": None, "avg_min": None}
+
+    debt = sum(max(0.0, target_min - m) for m in nights.values())
+    avg = sum(nights.values()) / len(nights)
+    return {"nights": len(nights), "debt_min": int(round(debt)), "avg_min": int(round(avg))}
+
+
+def sleep_debt_line(sd):
+    """แปลงผล calc_sleep_debt เป็นบรรทัดข้อความ (คืน None ถ้าไม่มีข้อมูล)"""
+    if not sd:
+        return None
+    if sd["debt_min"] is None:
+        return f"  💤 หนี้การนอน: ข้อมูลยังไม่พอ ({sd['nights']}/{SLEEP_DEBT_WINDOW} คืน)"
+
+    debt = sd["debt_min"]
+    if debt < 60:
+        label = " 🟢 ปกติ"
+    elif debt < 180:
+        label = " 🟡 เริ่มสะสม"
+    elif debt < 300:
+        label = " 🟠 ค่อนข้างมาก"
+    else:
+        label = " 🔴 สูง ควรนอนชดเชย"
+
+    note = "" if sd["nights"] == SLEEP_DEBT_WINDOW else f" (จาก {sd['nights']} คืน)"
+    return (f"  💤 หนี้การนอน 7 วัน: {minutes_to_hm(debt)}{label}{note}"
+            f" | เฉลี่ย {minutes_to_hm(sd['avg_min'])}/คืน")
 
 def build_message(data):
     date = data["date"]
@@ -639,6 +705,10 @@ def build_message(data):
             band = sqi_data.get("band", "")
             icon = "🟢" if band == "good" else "🟡" if band == "fair" else "🔴" if band == "poor" else ""
             lines.append(f"  📊 Sleep Quality (SQI): {fmt(sqi_val, '', 1)}/100 {icon}")
+            
+        sd_line = sleep_debt_line(data.get("sleep_debt"))
+        if sd_line:
+            lines.append(sd_line)
 
     # --- สุขภาพ & การฟื้นฟู ---
     recovery = data.get("recovery_score")
