@@ -421,6 +421,8 @@ def gather_today_summary():
     sleep_target = load_user_config().get("sleep_target_min", SLEEP_TARGET_MIN)
     sleep_debt = calc_sleep_debt(sleep_rows, date, target_min=sleep_target)
     
+    sleep_reg = calc_sleep_regularity(sleep_rows, date)
+    
     weekly_load = calc_weekly_load(all_recent_activities, date)
 
     hrv_trend = calc_metric_trend(sleep_rows, date, "hrv")
@@ -441,6 +443,7 @@ def gather_today_summary():
         "fitness": {"ctl": ctl_now, "atl": atl_now, "tsb": tsb_now},
         "history": history,
         "sleep_debt": sleep_debt,
+        "sleep_reg": sleep_reg,
         "weekly_load": weekly_load,
         "hrv_trend": hrv_trend,
         "rhr_trend": rhr_trend,
@@ -585,6 +588,79 @@ def sleep_debt_line(sd):
     note = "" if sd["nights"] == SLEEP_DEBT_WINDOW else f" (จาก {sd['nights']} คืน)"
     return (f"  💤 หนี้การนอน 7 วัน: {minutes_to_hm(debt)}{label}{note}"
             f" | เฉลี่ย {minutes_to_hm(sd['avg_min'])}/คืน")
+
+def calc_sleep_regularity(sleep_rows, today, window=7):
+    """คำนวณ SD ของเวลาเข้านอน และเวลาตื่นนอนใน 7 วันล่าสุด"""
+    try:
+        end = datetime.strptime(today, "%Y-%m-%d")
+    except ValueError:
+        return None
+    start = end - timedelta(days=window - 1)
+
+    start_times = []
+    end_times = []
+    
+    for r in sleep_rows or []:
+        d = normalize_date(r.get("date"))
+        if not d: continue
+        try:
+            dt = datetime.strptime(d, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+            
+        if start <= dt <= end:
+            try:
+                s_data = json.loads(r.get("summary_json") or "{}")
+                st_str = s_data.get("startTime")
+                et_str = s_data.get("endTime")
+                if st_str and et_str:
+                    # Parse "2026-09-26 23:17"
+                    st = datetime.strptime(st_str, "%Y-%m-%d %H:%M")
+                    et = datetime.strptime(et_str, "%Y-%m-%d %H:%M")
+                    
+                    # แปลงเวลาเป็นนาทีจากเที่ยงคืน 
+                    # ให้เที่ยงคืน = 0 ถ้าเป็นเมื่อวานก่อนเที่ยงคืนให้คิดเป็นลบ
+                    # เอาแค่นาทีรวมสำหรับหา SD 
+                    # สมมติ 기준เวลาที่เข้านอนคือ 12:00 วันก่อนหน้า - 12:00 วันนี้
+                    # วิธีง่ายๆ: หาชั่วโมงและนาที แล้วบวกด้วย 24*60 ถ้าชั่วโมง < 12
+                    st_mins = st.hour * 60 + st.minute
+                    if st.hour < 12:
+                        st_mins += 24 * 60
+                    start_times.append(st_mins)
+                    
+                    et_mins = et.hour * 60 + et.minute
+                    end_times.append(et_mins)
+            except Exception:
+                pass
+                
+    if len(start_times) < 4:
+        return {"days": len(start_times)}
+        
+    import statistics
+    try:
+        st_sd = statistics.stdev(start_times)
+        et_sd = statistics.stdev(end_times)
+        return {"days": len(start_times), "start_sd_min": st_sd, "end_sd_min": et_sd}
+    except statistics.StatisticsError:
+        return {"days": len(start_times)}
+
+def sleep_regularity_line(reg):
+    if not reg or "start_sd_min" not in reg:
+        return None
+    
+    st_sd = reg["start_sd_min"]
+    et_sd = reg["end_sd_min"]
+    avg_sd = (st_sd + et_sd) / 2
+    
+    if avg_sd <= 30:
+        icon, note = "🟢", "สม่ำเสมอดีมาก"
+    elif avg_sd <= 60:
+        icon, note = "🟡", "ค่อนข้างสม่ำเสมอ"
+    else:
+        icon, note = "🔴", "แกว่งไปมา"
+        
+    return f"  🔄 ความสม่ำเสมอ: {icon} {note} (แกว่งเฉลี่ย ±{int(avg_sd)} นาที)"
+
 
 WEEKLY_MIN_BASE_KM = 5        # สัปดาห์ก่อนต้องวิ่งอย่างน้อยเท่านี้ถึงจะคิด %
 
@@ -906,6 +982,10 @@ def build_message(data):
         sd_line = sleep_debt_line(data.get("sleep_debt"))
         if sd_line:
             lines.append(sd_line)
+            
+        reg_line = sleep_regularity_line(data.get("sleep_reg"))
+        if reg_line:
+            lines.append(reg_line)
 
     # --- สุขภาพ & การฟื้นฟู ---
     recovery = data.get("recovery_score")

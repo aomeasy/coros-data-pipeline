@@ -306,6 +306,29 @@ def sync_sleep_and_health(days=7):
     # API 2: queryDailyHealthData สำหรับ steps, calories, stress, avg_hr, baseline
     ok, msg, text = call_tool_text("queryDailyHealthData", {"days": days})
 
+    # API 3: querySleepOverview สำหรับ startTime / endTime
+    sleep_windows = {}
+    try:
+        ok_sov, msg_sov, sov_text = call_tool_text("querySleepOverview", {
+            "startDate": (datetime.now(ICT) - timedelta(days=days)).strftime("%Y%m%d"),
+            "endDate": datetime.now(ICT).strftime("%Y%m%d"),
+        })
+        if ok_sov and sov_text:
+            current_date = None
+            for line in sov_text.splitlines():
+                m_date = re.search(r'^(\d{4}-\d{2}-\d{2})', line)
+                if m_date:
+                    current_date = m_date.group(1).replace("-", "")
+                    continue
+                m_window = re.search(r'Main Sleep Window:\s*([\d-]+\s[\d:]+)\s*-\s*([\d-]+\s[\d:]+)', line)
+                if current_date and m_window:
+                    sleep_windows[current_date] = {
+                        "startTime": m_window.group(1),
+                        "endTime": m_window.group(2)
+                    }
+    except Exception as e:
+        log.warning("querySleepOverview failed (continuing)", error=str(e))
+
     if not ok:
         return False, msg
     if not text:
@@ -404,6 +427,11 @@ def sync_sleep_and_health(days=7):
         m_hr = re.search(r'Min\s*(\d+)\s*bpm', content)
         if m_hr:
             sleep_rec["restingHeartRate"] = int(m_hr.group(1))
+            
+        # Add sleep window
+        if date_str in sleep_windows:
+            sleep_rec["startTime"] = sleep_windows[date_str]["startTime"]
+            sleep_rec["endTime"] = sleep_windows[date_str]["endTime"]
 
         if "Sleep Summary:" in content:
             if coros_db.store_sleep(sleep_rec):
