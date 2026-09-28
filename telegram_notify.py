@@ -178,28 +178,88 @@ def acwr_line(acwr, history_days=None):
     return f"  ACWR: {fmt(acwr, '', 2)}{acwr_flag(acwr)}"
 
 
+TREND_MIN_POINTS = 5   # ต้องมีข้อมูลอย่างน้อยกี่คืนใน 7 วัน
+
+
+def calc_metric_trend(sleep_rows, today, key, window=7):
+    """
+    แนวโน้มของค่ารายคืน (เช่น 'hrv', 'resting_hr'):
+    เฉลี่ย 3 วันล่าสุด เทียบเฉลี่ยของวันก่อนหน้าในช่วง window วัน
+    คืน None ถ้าวันที่ผิดรูปแบบ, values=None ถ้าข้อมูลไม่พอ
+    """
+    try:
+        end = datetime.strptime(today, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    start = end - timedelta(days=window - 1)
+
+    by_day = {}
+    for r in sleep_rows or []:
+        d = normalize_date(r.get("date"))
+        v = r.get(key)
+        if not d or not v:
+            continue
+        try:
+            day = datetime.strptime(d, "%Y-%m-%d").date()
+            val = float(v)
+        except (ValueError, TypeError):
+            continue
+        if start <= day <= end:
+            by_day[day] = val
+
+    if len(by_day) < TREND_MIN_POINTS:
+        return {"points": len(by_day), "values": None}
+
+    vals = [by_day[d] for d in sorted(by_day)]
+    recent, earlier = vals[-3:], vals[:-3]
+    return {
+        "points": len(vals),
+        "values": vals,
+        "recent": sum(recent) / len(recent),
+        "earlier": sum(earlier) / len(earlier),
+    }
+
+
 def sparkline(values):
-    """สร้างกราฟแท่ง (sparkline) จาก list ตัวเลข รองรับ None"""
-    valid = [v for v in values if v is not None]
-    if not valid: return ""
-    bars = " ▂▃▄▅▆▇█"
-    mn, mx = min(valid), max(valid)
-    res = ""
-    for v in values:
-        if v is None: res += " "
-        elif mx == mn: res += bars[3]
-        else: res += bars[int((v - mn) / (mx - mn) * 7)]
-    return res
+    """ย่อค่าเป็นกราฟแท่งเล็กๆ เช่น ▂▃▅▄▆"""
+    if not values:
+        return ""
+    bars = "▁▂▃▄▅▆▇█"
+    lo, hi = min(values), max(values)
+    if hi == lo:
+        return bars[3] * len(values)
+    return "".join(bars[int((v - lo) / (hi - lo) * 7)] for v in values)
 
 
-def calc_metric_trend(history, metric_key, days=7):
-    """สร้างข้อมูล trend จากประวัติ 7 วันล่าสุด (เก่า->ใหม่)"""
-    if not history: return None
-    recent = history[-days:]
-    data = [d.get(metric_key) for d in recent]
-    valid = [d for d in data if d is not None]
-    if len(valid) < 3: return None
-    return {"sparkline": sparkline(data)}
+def trend_line(label, t, kind):
+    """kind = 'hrv' (สูงขึ้นดี) หรือ 'rhr' (ต่ำลงดี)"""
+    if not t:
+        return None
+    if t["values"] is None:
+        return f"  {label}: ข้อมูลยังไม่พอ ({t['points']}/7 คืน)"
+
+    recent, earlier = t["recent"], t["earlier"]
+    if kind == "hrv":
+        pct = (recent - earlier) / earlier * 100 if earlier else 0
+        change_txt = f"{'+' if pct > 0 else ''}{pct:.0f}%"
+        if pct >= 5:
+            arrow, icon, note = "↑", "🟢", "ดีขึ้น"
+        elif pct <= -5:
+            arrow, icon, note = "↓", "🟡", "ต่ำลง"
+        else:
+            arrow, icon, note = "→", "✅", "ทรงตัว"
+    else:
+        diff = recent - earlier
+        change_txt = f"{'+' if diff > 0 else ''}{diff:.0f} bpm"
+        if diff <= -2:
+            arrow, icon, note = "↓", "🟢", "ดีขึ้น"
+        elif diff >= 2:
+            arrow, icon, note = "↑", "🟡", "สูงขึ้น"
+        else:
+            arrow, icon, note = "→", "✅", "ทรงตัว"
+
+    return (f"  {label}: {arrow} {earlier:.0f} → {recent:.0f} ({change_txt}) "
+            f"{icon} {note}  {sparkline(t['values'])}")
 
 
 def _find_history_days(strain):
@@ -363,8 +423,8 @@ def gather_today_summary():
     
     weekly_load = calc_weekly_load(all_recent_activities, date)
 
-    hrv_trend = calc_metric_trend(history, "hrv", days=7)
-    rhr_trend = calc_metric_trend(history, "rhr", days=7)
+    hrv_trend = calc_metric_trend(sleep_rows, date, "hrv")
+    rhr_trend = calc_metric_trend(sleep_rows, date, "resting_hr")
 
     return {
         "date": date,
@@ -830,13 +890,11 @@ def build_message(data):
 
         lines.append(f"  💓 HRV: {hrv_str} | Resting HR: {rhr_str}")
         
-        hrv_trend = data.get("hrv_trend")
-        rhr_trend = data.get("rhr_trend")
-        if hrv_trend or rhr_trend:
-            trend_strs = []
-            if hrv_trend: trend_strs.append(f"HRV {hrv_trend['sparkline']}")
-            if rhr_trend: trend_strs.append(f"RHR {rhr_trend['sparkline']}")
-            lines.append(f"  📈 แนวโน้ม 7 วัน: " + " | ".join(trend_strs))
+        for lbl, key, kind in (("แนวโน้ม HRV", "hrv_trend", "hrv"),
+                               ("แนวโน้ม RHR", "rhr_trend", "rhr")):
+            tl = trend_line(lbl, data.get(key), kind)
+            if tl:
+                lines.append(tl)
         
         sqi_data = data.get("sqi") or {}
         sqi_val = sqi_data.get("sqi")
@@ -1089,18 +1147,40 @@ def build_message(data):
 
 def send_telegram_message(text, bot_token, chat_id):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    resp = requests.post(
-        url,
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()
+    
+    # แบ่งข้อความถ้ายาวเกิน 4096 ตัวอักษร
+    max_len = 4000
+    lines = text.split("\n")
+    chunks = []
+    current_chunk = ""
+    
+    for line in lines:
+        # +1 เผื่อ character \n
+        if len(current_chunk) + len(line) + 1 > max_len:
+            chunks.append(current_chunk)
+            current_chunk = line + "\n"
+        else:
+            current_chunk += line + "\n"
+            
+    if current_chunk.strip():
+        chunks.append(current_chunk)
+        
+    responses = []
+    for chunk in chunks:
+        resp = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": chunk.strip(),
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        responses.append(resp.json())
+        
+    return responses[-1] if responses else None
 
 
 # =============================================================================
