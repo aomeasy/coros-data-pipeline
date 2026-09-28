@@ -178,6 +178,30 @@ def acwr_line(acwr, history_days=None):
     return f"  ACWR: {fmt(acwr, '', 2)}{acwr_flag(acwr)}"
 
 
+def sparkline(values):
+    """สร้างกราฟแท่ง (sparkline) จาก list ตัวเลข รองรับ None"""
+    valid = [v for v in values if v is not None]
+    if not valid: return ""
+    bars = " ▂▃▄▅▆▇█"
+    mn, mx = min(valid), max(valid)
+    res = ""
+    for v in values:
+        if v is None: res += " "
+        elif mx == mn: res += bars[3]
+        else: res += bars[int((v - mn) / (mx - mn) * 7)]
+    return res
+
+
+def calc_metric_trend(history, metric_key, days=7):
+    """สร้างข้อมูล trend จากประวัติ 7 วันล่าสุด (เก่า->ใหม่)"""
+    if not history: return None
+    recent = history[-days:]
+    data = [d.get(metric_key) for d in recent]
+    valid = [d for d in data if d is not None]
+    if len(valid) < 3: return None
+    return {"sparkline": sparkline(data)}
+
+
 def _find_history_days(strain):
     """
     หา history_days ที่ strain_engine บันทึกไว้ใน summary_json (ถ้ามี) — ค้นแบบ recursive
@@ -339,6 +363,9 @@ def gather_today_summary():
     
     weekly_load = calc_weekly_load(all_recent_activities, date)
 
+    hrv_trend = calc_metric_trend(history, "hrv", days=7)
+    rhr_trend = calc_metric_trend(history, "rhr", days=7)
+
     return {
         "date": date,
         "activities": activities,
@@ -355,6 +382,8 @@ def gather_today_summary():
         "history": history,
         "sleep_debt": sleep_debt,
         "weekly_load": weekly_load,
+        "hrv_trend": hrv_trend,
+        "rhr_trend": rhr_trend,
     }
 
 
@@ -800,6 +829,14 @@ def build_message(data):
             rhr_str += f" ({sign}{diff:.0f} จากค่าเฉลี่ย {rhr_baseline:.0f})"
 
         lines.append(f"  💓 HRV: {hrv_str} | Resting HR: {rhr_str}")
+        
+        hrv_trend = data.get("hrv_trend")
+        rhr_trend = data.get("rhr_trend")
+        if hrv_trend or rhr_trend:
+            trend_strs = []
+            if hrv_trend: trend_strs.append(f"HRV {hrv_trend['sparkline']}")
+            if rhr_trend: trend_strs.append(f"RHR {rhr_trend['sparkline']}")
+            lines.append(f"  📈 แนวโน้ม 7 วัน: " + " | ".join(trend_strs))
         
         sqi_data = data.get("sqi") or {}
         sqi_val = sqi_data.get("sqi")
