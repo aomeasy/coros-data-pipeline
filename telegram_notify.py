@@ -362,6 +362,72 @@ def load_user_config():
     except Exception:
         return {}
 
+TRAIN_LEVELS = [
+    ("🔴", "พักเต็มวัน", "งดซ้อม เน้นนอนและกินให้พอ เดินเบาๆ หรือยืดเหยียดได้"),
+    ("🟠", "ซ้อมเบา", "วิ่ง/ปั่นช้าๆ พูดคุยได้ (Zone 1-2) ไม่เกิน 30-45 นาที"),
+    ("🟡", "ซ้อมตามแผนปกติ", "ความหนักปานกลาง ทำตามแผนได้เลย ไม่ต้องเพิ่มพิเศษ"),
+    ("🟢", "ซ้อมหนักได้", "เหมาะกับ interval / tempo / long run"),
+]
+
+
+def training_recommendation(data):
+    """
+    สรุปคำแนะนำการซ้อมจาก Recovery + ความเสี่ยงป่วย + Form (TSB) + HRV
+    คืนค่า list ของบรรทัดข้อความ หรือ None ถ้าไม่มี Recovery
+    """
+    rec = (data.get("recovery_score") or {}).get("recovery_score")
+    if rec is None:
+        return None
+
+    reasons = [f"Recovery {rec:.0f}/100"]
+
+    # 1) ระดับเริ่มต้นจาก Recovery
+    if rec >= 80:
+        level = 3
+    elif rec >= 60:
+        level = 2
+    elif rec >= 40:
+        level = 1
+    else:
+        level = 0
+
+    # 2) ความเสี่ยงป่วย (ข้อนี้สำคัญกว่าทุกอย่าง)
+    risk = (data.get("illness_risk") or {}).get("risk_level", "none")
+    if risk in ("medium", "high"):
+        level = 0
+        reasons.append("มีสัญญาณเสี่ยงป่วย")
+    elif risk == "low":
+        level = min(level, 2)
+        reasons.append("มีสัญญาณเสี่ยงป่วยเล็กน้อย")
+
+    # 3) Form (TSB) ล้าสะสม
+    tsb = (data.get("fitness") or {}).get("tsb")
+    if tsb is not None and tsb < -15:
+        level -= 1
+        reasons.append(f"ล้าสะสม (Form {tsb:.0f})")
+
+    # 4) HRV ต่ำกว่าค่าเฉลี่ยของตัวเองเกิน 1 std
+    hrv_today = (data.get("sleep") or {}).get("hrv")
+    hrv_raw = (data.get("baselines") or {}).get("hrv_ms")
+    if isinstance(hrv_raw, dict):
+        hrv_base = hrv_raw.get("baseline")
+        hrv_sd = hrv_raw.get("std_dev") or 5
+    else:
+        hrv_base, hrv_sd = hrv_raw, 5
+    if hrv_today and hrv_base and hrv_today < hrv_base - hrv_sd:
+        level -= 1
+        reasons.append("HRV ต่ำกว่าปกติ")
+
+    level = max(0, min(3, level))
+    icon, title, detail = TRAIN_LEVELS[level]
+    day_word = "วันนี้" if datetime.now(ICT).hour < 17 else "พรุ่งนี้"
+
+    return [
+        f"🎯 <b>คำแนะนำ{day_word}:</b> {icon} {title}",
+        f"  {detail}",
+        f"  เหตุผล: {' • '.join(reasons)}",
+    ]
+
 def build_message(data):
     date = data["date"]
     activities = data["activities"]
@@ -589,6 +655,12 @@ def build_message(data):
             risk = illness.get("risk_level", "none")
             risk_label = "ไม่มี" if risk == "none" else "ต่ำ" if risk == "low" else "ปานกลาง" if risk == "medium" else "สูง"
             lines.append(f"  ⚠️ ความเสี่ยงป่วย: {risk_label}")
+
+    # --- คำแนะนำการซ้อม ---
+    train_advice = training_recommendation(data)
+    if train_advice:
+        lines.append("")
+        lines.extend(train_advice)
 
     # --- Strain / ACWR ---
     if strain:
