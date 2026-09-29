@@ -11,9 +11,6 @@ import coros_db
 MAX_PER_RUN = 3                      # กันชนโควตาดาวน์โหลดต่อวัน (workflow รัน 3 รอบ/วัน)
 COROS = shutil.which("coros-mcp") or "coros-mcp"
 
-# ล้างสถานะ no_url ที่เกิดจาก first_url() เวอร์ชันเก่าที่พัง (หมดอายุเองหลังวันนี้)
-STALE_NO_URL_BEFORE = "2026-09-30"
-
 URL_RE = re.compile(r"https?://[^\s\"'<>]+\.fit[^\s\"'<>]*")
 
 SCHEMA = """
@@ -60,6 +57,7 @@ def first_url(obj):
                 return u
     return None
 
+
 def _row(ts, lat, lon, hr, speed, alt, cad, dist, pwr):
     return (ts.isoformat(),
             lat * 180 / 2**31 if lat is not None else None,
@@ -67,8 +65,17 @@ def _row(ts, lat, lon, hr, speed, alt, cad, dist, pwr):
             hr, speed, alt, cad, dist, pwr)
 
 
+def _from_dict(d):
+    return _row(
+        d["timestamp"], d.get("position_lat"), d.get("position_long"),
+        d.get("heart_rate"),
+        d.get("enhanced_speed", d.get("speed")),
+        d.get("enhanced_altitude", d.get("altitude")),
+        d.get("cadence"), d.get("distance"), d.get("power"))
+
+
 def parse_fit(data):
-    """ลอง garmin-fit-sdk ก่อน (ทนไฟล์แปลก) ถ้าไม่มี/พังค่อยใช้ fitparse"""
+    """ลอง garmin-fit-sdk ก่อน (ทนไฟล์แปลก) ถ้าไม่มี/ไม่ได้ record ค่อยใช้ fitparse"""
     try:
         from garmin_fit_sdk import Decoder, Stream
     except ImportError:
@@ -85,44 +92,25 @@ def parse_fit(data):
             expand_components=True,
             merge_heart_rates=True,
         )
-        records = messages.get("record_mesgs", [])
         if errors:
             print(f"  decoder warnings: {errors[:2]}")
-        if records:
-            out = []
-            for d in records:
-                if not d.get("timestamp"):
-                    continue
-                out.append(_row(
-                    d["timestamp"], d.get("position_lat"), d.get("position_long"),
-                    d.get("heart_rate"),
-                    d.get("enhanced_speed", d.get("speed")),
-                    d.get("enhanced_altitude", d.get("altitude")),
-                    d.get("cadence"), d.get("distance"), d.get("power")))
+        out = [_from_dict(d) for d in messages.get("record_mesgs", [])
+               if d.get("timestamp")]
+        if out:
             return out
 
     # สำรอง: fitparse
     out = []
     for m in FitFile(io.BytesIO(data)).get_messages("record"):
         d = {f.name: f.value for f in m}
-        if not d.get("timestamp"):
-            continue
-        out.append(_row(
-            d["timestamp"], d.get("position_lat"), d.get("position_long"),
-            d.get("heart_rate"),
-            d.get("enhanced_speed", d.get("speed")),
-            d.get("enhanced_altitude", d.get("altitude")),
-            d.get("cadence"), d.get("distance"), d.get("power")))
+        if d.get("timestamp"):
+            out.append(_from_dict(d))
     return out
+
 
 def main():
     conn = coros_db.get_conn()
     conn.executescript(SCHEMA)
-
-    conn.execute(
-        "DELETE FROM fit_imported WHERE status = 'no_url' AND imported_at < ?",
-        (STALE_NO_URL_BEFORE,))
-    conn.commit()
 
     pending = conn.execute("""
         SELECT activity_id, sport_type FROM activities
@@ -149,6 +137,7 @@ def main():
                              (aid, "no_url", 0, now))
                 conn.commit()
                 continue
+
             resp = requests.get(url, timeout=120)
             resp.raise_for_status()
             try:
@@ -159,6 +148,7 @@ def main():
                              (aid, "parse_error", 0, now))
                 conn.commit()
                 continue
+
             conn.executemany(
                 "INSERT OR IGNORE INTO activity_records "
                 "(activity_id,ts,lat,lon,hr,speed,altitude,cadence,distance,power) "
