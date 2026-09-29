@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """ดาวน์โหลดไฟล์ FIT ของกิจกรรมที่ยังไม่เคยโหลด แล้วเก็บจุดข้อมูลลง SQLite"""
-import io, json, shutil, subprocess
+import io, json, re, shutil, subprocess
 from datetime import datetime
 
 import requests
@@ -10,6 +10,11 @@ import coros_db
 
 MAX_PER_RUN = 3                      # กันชนโควตาดาวน์โหลดต่อวัน (workflow รัน 3 รอบ/วัน)
 COROS = shutil.which("coros-mcp") or "coros-mcp"
+
+# ล้างสถานะ no_url ที่เกิดจาก first_url() เวอร์ชันเก่าที่พัง (หมดอายุเองหลังวันนี้)
+STALE_NO_URL_BEFORE = "2026-09-30"
+
+URL_RE = re.compile(r"https?://[^\s\"'<>]+\.fit[^\s\"'<>]*")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS activity_records (
@@ -28,6 +33,7 @@ CREATE TABLE IF NOT EXISTS fit_imported (
 );
 """
 
+
 def call_tool(tool, args):
     r = subprocess.run(
         [COROS, "call-tool", "--tool", tool, "--arguments-json", json.dumps(args)],
@@ -36,9 +42,12 @@ def call_tool(tool, args):
         raise RuntimeError(r.stderr.strip() or r.stdout.strip())
     return json.loads(r.stdout)
 
+
 def first_url(obj):
-    if isinstance(obj, str) and obj.startswith("http"):
-        return obj
+    """หา URL ไฟล์ .fit แรกในผลลัพธ์ (รองรับ dict/list ซ้อน และข้อความล้วน)"""
+    if isinstance(obj, str):
+        m = URL_RE.search(obj)
+        return m.group(0) if m else None
     if isinstance(obj, dict):
         for v in obj.values():
             u = first_url(v)
@@ -50,6 +59,7 @@ def first_url(obj):
             if u:
                 return u
     return None
+
 
 def parse_fit(data):
     for m in FitFile(io.BytesIO(data)).get_messages("record"):
@@ -67,9 +77,15 @@ def parse_fit(data):
             d.get("cadence"), d.get("distance"), d.get("power"),
         )
 
+
 def main():
     conn = coros_db.get_conn()
     conn.executescript(SCHEMA)
+
+    conn.execute(
+        "DELETE FROM fit_imported WHERE status = 'no_url' AND imported_at < ?",
+        (STALE_NO_URL_BEFORE,))
+    conn.commit()
 
     pending = conn.execute("""
         SELECT activity_id, sport_type FROM activities
@@ -91,13 +107,14 @@ def main():
             url = first_url(res)
             now = datetime.now().isoformat()
             if not url:
-                print(f"{aid}: ไม่มี URL -> {json.dumps(res)[:300]}")
+                print(f"{aid}: ไม่มี URL -> {json.dumps(res, ensure_ascii=False)[:300]}")
                 conn.execute("INSERT OR REPLACE INTO fit_imported VALUES (?,?,?,?)",
                              (aid, "no_url", 0, now))
                 conn.commit()
                 continue
-            data = requests.get(url, timeout=120).content
-            rows = [(aid, *r) for r in parse_fit(data)]
+            resp = requests.get(url, timeout=120)
+            resp.raise_for_status()
+            rows = [(aid, *r) for r in parse_fit(resp.content)]
             conn.executemany(
                 "INSERT OR IGNORE INTO activity_records "
                 "(activity_id,ts,lat,lon,hr,speed,altitude,cadence,distance,power) "
@@ -110,6 +127,7 @@ def main():
             print(f"{aid}: error {e}")   # ไม่บันทึกสถานะ รอบหน้าลองใหม่
             break                         # มักเป็นโควตาเต็ม หยุดเลย
     conn.close()
+
 
 if __name__ == "__main__":
     main()
