@@ -6,6 +6,16 @@ on:
     - cron: '0 11 * * *'   # 18:00 ICT = 11:00 UTC
     - cron: '0 15 * * *'   # 22:00 ICT = 15:00 UTC
   workflow_dispatch:
+    inputs:
+      bootstrap:
+        description: 'ครั้งแรกครั้งเดียว: ส่ง coros_cache.db ที่ commit อยู่ขึ้น D1 ก่อน pull'
+        type: boolean
+        default: false
+
+# กันสองรอบรันซ้อนกัน (เช่น รันมือตอนที่ cron ทำงานอยู่)
+concurrency:
+  group: coros-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -21,7 +31,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt requests
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -33,6 +43,26 @@ jobs:
 
       - name: Init DB
         run: python -c "import coros_db; coros_db.init_db()"
+
+      # ทำเฉพาะตอนกด Run workflow เองแล้วติ๊ก bootstrap: อัปโหลดข้อมูลใน .db ที่ commit อยู่ขึ้น D1
+      - name: Bootstrap D1 from committed DB (one-time)
+        if: ${{ github.event.inputs.bootstrap == 'true' }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python d1_sync.py push
+
+      # ถ้า pull ล้มเหลว job จะหยุดทันที (ไม่ให้ทำงานต่อบนฐานข้อมูลว่าง)
+      - name: Pull DB from D1
+        id: pull
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python d1_sync.py pull
 
       - name: Run Sync
         env:
@@ -56,11 +86,24 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python telegram_notify.py
 
-      - name: Commit DB + docs
+      # ส่งขึ้น D1 ทุกครั้งที่ pull สำเร็จ แม้ขั้นตอนกลาง (เช่น Telegram) จะพลาด
+      # ตั้งไว้หลัง Telegram เพราะ telegram_notify.py เขียน cache ลง DB ด้วย
+      - name: Push DB to D1
+        if: ${{ always() && steps.pull.outcome == 'success' }}
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_D1_ID: ${{ secrets.CF_D1_ID }}
+          PYTHONIOENCODING: utf-8
+        run: python d1_sync.py push
+
+      # หมายเหตุ: ไม่ commit coros_cache.db อีกแล้ว
+      # แต่ docs/data.json (ข้อมูลสุขภาพสรุป) ยังถูก commit ขึ้น repo ตามเดิม
+      - name: Commit docs
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f coros_cache.db docs/data.json
+          git add -f docs/data.json
           if (git diff --cached --quiet) {
             echo "No changes"
           } else {
