@@ -576,18 +576,32 @@ def sleep_debt_line(sd):
         return f"  💤 หนี้การนอน: ข้อมูลยังไม่พอ ({sd['nights']}/{SLEEP_DEBT_WINDOW} คืน)"
 
     debt = sd["debt_min"]
-    if debt < 60:
-        label = " 🟢 ปกติ"
-    elif debt < 180:
-        label = " 🟡 เริ่มสะสม"
-    elif debt < 300:
-        label = " 🟠 ค่อนข้างมาก"
-    else:
-        label = " 🔴 สูง ควรนอนชดเชย"
+    # Convert sleep_debt['debt_min'] to hours and minutes for the message
+    debt_h, debt_m = divmod(debt, 60)
+    debt_hm_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
+    
+    # Calculate daily increase needed (simple suggestion)
+    daily_increase_min = int(debt / sd["nights"]) if sd["nights"] > 0 else 0
+    if daily_increase_min == 0 and debt > 0: # If debt is very small, suggest 5 min
+        daily_increase_min = 5
 
-    note = "" if sd["nights"] == SLEEP_DEBT_WINDOW else f" (จาก {sd['nights']} คืน)"
-    return (f"  💤 หนี้การนอน 7 วัน: {minutes_to_hm(debt)}{label}{note}"
-            f" | เฉลี่ย {minutes_to_hm(sd['avg_min'])}/คืน")
+    label_part = ""
+    if debt < 60:
+        label_part = "🟢 ปกติ"
+    elif debt < 180:
+        label_part = "🟡 เริ่มสะสม"
+    elif debt < 300:
+        label_part = "🟠 ค่อนข้างมาก"
+    else:
+        label_part = "🔴 สูง ควรนอนชดเชย"
+
+    # New phrasing as requested by user
+    return (
+        f"  💤 หนี้การนอน 7 วัน: {label_part} "
+        f"| ช่วง 7 วันที่ผ่านมา คุณนอนขาดไปรวม {debt_hm_str} "
+        f"ควรนอนเพิ่มคืนละประมาณ {daily_increase_min} นาที"
+    )
+
 
 def calc_sleep_regularity(sleep_rows, today, window=7):
     """คำนวณ SD ของเวลาเข้านอน และเวลาตื่นนอนใน 7 วันล่าสุด"""
@@ -650,16 +664,18 @@ def sleep_regularity_line(reg):
     
     st_sd = reg["start_sd_min"]
     et_sd = reg["end_sd_min"]
-    avg_sd = (st_sd + et_sd) / 2
-    
-    if avg_sd <= 30:
+    # Add clarification about what "แกว่งเฉลี่ย" means
+    avg_sd_val = int(round((st_sd + et_sd) / 2)) # Use rounded average SD
+
+    if avg_sd_val <= 30:
         icon, note = "🟢", "สม่ำเสมอดีมาก"
-    elif avg_sd <= 60:
+    elif avg_sd_val <= 60:
         icon, note = "🟡", "ค่อนข้างสม่ำเสมอ"
     else:
         icon, note = "🔴", "แกว่งไปมา"
         
-    return f"  🔄 ความสม่ำเสมอ: {icon} {note} (แกว่งเฉลี่ย ±{int(avg_sd)} นาที)"
+    # Use the new avg_sd_val in the output message
+    return (f"  🔄 ความสม่ำเสมอ: {icon} {note} (แกว่งเฉลี่ยเวลาเข้านอน/ตื่นนอน ±{avg_sd_val} นาที)")
 
 
 WEEKLY_MIN_BASE_KM = 5        # สัปดาห์ก่อนต้องวิ่งอย่างน้อยเท่านี้ถึงจะคิด %
@@ -818,13 +834,21 @@ def build_message(data):
         lines.append("📍 <b>กิจกรรม</b>: ไม่มีบันทึกวันนี้")
         
     # --- สรุปภาพรวมรายวัน & ความฟิต ---
-    import json
+    # ดึง narrative จาก export.py/data.json และแสดงผล
+    # import json # Already imported at top
+    # import os # Already imported at top
     try:
+        # โหลด full_data จาก data.json ที่ export.py สร้างไว้
         with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"), "r", encoding="utf-8") as f:
             full_data = json.load(f)
             
             narrative = full_data.get("narrative", {}).get("summary")
             if narrative:
+                # ใส่ recovery score จาก data ที่คำนวณมาแล้ว
+                rec_score = (data.get("recovery_score") or {}).get("recovery_score")
+                if rec_score is not None:
+                    # ปัดเศษลงเพื่อเป็นตัวเลขเดียวกับที่แสดงในส่วน Recovery Score: 74.7/100 (ดีมาก)
+                    narrative = re.sub(r'Recovery\s*\d+/100', f"Recovery {int(round(rec_score))}/100", narrative)
                 lines.insert(1, "")
                 lines.insert(2, f"🤖 <b>สรุป:</b> {narrative}")
                 
@@ -906,42 +930,47 @@ def build_message(data):
         else:
             lines.append("😴 <b>การนอน</b>")
         
-        duration_min = sleep.get('duration_min') or 0
-        lines.append(f"  ระยะเวลารวม: {minutes_to_hm(duration_min)}")
+    # --- Sleep summary (start_time / end_time) --- 
+    # The previous code for displaying duration and start/end times was mixed with other sleep metrics.
+    # Move it here to display together at the top of the sleep section.
+    lines.append(f"  ระยะเวลารวม: {minutes_to_hm(total_sleep_duration)}")
+
+    # ดึงเวลาเข้านอน - ตื่นนอน จาก summary_json (ถ้ามี)
+    summary_json = sleep.get('summary_json')
+    if summary_json:
+        try:
+            import json
+            s_data = json.loads(summary_json)
+            start_str = s_data.get("startTime")  # COROS มักจะเก็บ startTime / endTime ใน summary_json
+            end_str = s_data.get("endTime")
+            if start_str and end_str:
+                # Reformat date/time as requested: "คืนที่ผ่านมา 22:19 – 06:14"
+                start_time_obj = datetime.strptime(start_str, "%Y-%m-%d %H:%M")
+                end_time_obj = datetime.strptime(end_str, "%Y-%m-%d %H:%M")
+                lines.append(f"  ⏰ คืนที่ผ่านมา {start_time_obj.strftime('%H:%M')} – {end_time_obj.strftime('%H:%M')}")
+        except:
+            pass
+    # --- End Sleep summary ---
+
+    # Display Deep/Light/REM/Awake percentages and minutes
+
+        if deep_pct is not None and total_sleep_duration > 0:
+            deep_min = int(total_sleep_duration * deep_pct / 100)
+            lines.append(f"  🟦 Deep: {fmt(deep_pct, '% ', 0)} ({minutes_to_hm(deep_min)})")
         
-        # ดึงเวลาเข้านอน - ตื่นนอน จาก summary_json (ถ้ามี)
-        summary_json = sleep.get('summary_json')
-        if summary_json:
-            try:
-                import json
-                s_data = json.loads(summary_json)
-                start_str = s_data.get("startTime")  # COROS มักจะเก็บ startTime / endTime ใน summary_json
-                end_str = s_data.get("endTime")
-                if start_str and end_str:
-                    lines.append(f"  ⏰ เวลานอน: {start_str} - {end_str}")
-            except:
-                pass
+        if light_pct is not None and total_sleep_duration > 0:
+            # Calculate light_min by subtracting deep, rem, and awake from total
+            deep_rem_awake_min = deep_min + rem_min + awake_min
+            light_min = total_sleep_duration - deep_rem_awake_min # Ensure sum is exactly total_sleep_duration
+
+            lines.append(f"  🟨 Light: {fmt(light_pct, '% ', 0)} ({minutes_to_hm(light_min)})")
         
-        # แสดง Deep/Light/REM เป็นทั้ง % และเวลา (นาที)
-        deep_pct = sleep.get('deep_sleep_pct')
-        light_pct = sleep.get('light_sleep_pct')
-        rem_pct = sleep.get('rem_sleep_pct')
+        if rem_pct is not None and total_sleep_duration > 0:
+            rem_min = int(total_sleep_duration * rem_pct / 100)
+            lines.append(f"  🟪 REM: {fmt(rem_pct, '% ', 0)} ({minutes_to_hm(rem_min)})")
         
-        if deep_pct is not None and duration_min > 0:
-            deep_min = int(duration_min * deep_pct / 100)
-            lines.append(f"  🟦 Deep: {fmt(deep_pct, '%', 0)} ({minutes_to_hm(deep_min)})")
-        
-        if light_pct is not None and duration_min > 0:
-            light_min = int(duration_min * light_pct / 100)
-            lines.append(f"  🟨 Light: {fmt(light_pct, '%', 0)} ({minutes_to_hm(light_min)})")
-        
-        if rem_pct is not None and duration_min > 0:
-            rem_min = int(duration_min * rem_pct / 100)
-            lines.append(f"  🟪 REM: {fmt(rem_pct, '%', 0)} ({minutes_to_hm(rem_min)})")
-        
-        awake_min = sleep.get('awake_min')
-        if awake_min:
-            lines.append(f"  ⚪ Awake: {minutes_to_hm(awake_min)}")
+        # Add Awake to the list with percentage
+        lines.append(f"  ⚪ Awake: {fmt(awake_pct, '% ', 0)} ({minutes_to_hm(awake_min)})")
         
         baselines = data.get("baselines", {})
         hrv_today = sleep.get('hrv')
@@ -1100,6 +1129,31 @@ def build_message(data):
             hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
             if hrv_today < (hrv_baseline - hrv_std_dev):
                 insights.append({"id": "A3", "level": "🟡", "priority": 3, "text": f"แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม"})
+
+        # A4 - หนี้การนอน (Sleep Debt) - Insight ใหม่
+        sleep_debt_data = data.get("sleep_debt")
+        if sleep_debt_data and sleep_debt_data.get("debt_min"):
+            debt = sleep_debt_data["debt_min"]
+            if debt >= 60 and debt < 180: # Yellow range: เริ่มสะสม
+                debt_h, debt_m = divmod(debt, 60)
+                debt_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
+                daily_increase_min = int(debt / sleep_debt_data["nights"]) if sleep_debt_data["nights"] > 0 else 0
+                insights.append({"id": "A4", "level": "🟡", "priority": 3, "text": f"มีหนี้การนอนสะสม {debt_str} ในรอบ 7 วัน แนะนำให้ลองเพิ่มเวลานอนคืนละ {daily_increase_min} นาที หรือเข้านอนเร็วขึ้น"})
+            elif debt >= 180: # Orange/Red range: ค่อนข้างมาก / สูง
+                debt_h, debt_m = divmod(debt, 60)
+                debt_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
+                daily_increase_min = int(debt / sleep_debt_data["nights"]) if sleep_debt_data["nights"] > 0 else 0
+                insights.append({"id": "A4", "level": "🟠", "priority": 2, "text": f"หนี้การนอนสะสมมากถึง {debt_str} ในรอบ 7 วัน แสดงว่าร่างกายพักผ่อนไม่เพียงพออย่างต่อเนื่อง ควรจัดตารางการนอนใหม่ เพิ่มเวลานอนคืนละ {daily_increase_min} นาที และงดกิจกรรมที่กระตุ้นการตื่นตัวก่อนนอน"})
+
+        # A5 - ความสม่ำเสมอการนอน (Sleep Regularity) - Insight ใหม่
+        sleep_reg_data = data.get("sleep_reg")
+        if sleep_reg_data and sleep_reg_data.get("start_sd_min") is not None:
+            avg_sd = (sleep_reg_data["start_sd_min"] + sleep_reg_data["end_sd_min"]) / 2
+            if avg_sd > 30 and avg_sd <= 60: # Yellow range: ค่อนข้างสม่ำเสมอ
+                insights.append({"id": "A5", "level": "🟡", "priority": 3, "text": f"เวลานอน-ตื่นเฉลี่ยแกว่งประมาณ ±{int(avg_sd)} นาทีในรอบ 7 วัน ความสม่ำเสมอส่งผลโดยตรงต่อคุณภาพการนอนและ HRV พยายามรักษาเวลานอน-ตื่นให้ใกล้เคียงกันทุกวัน โดยเฉพาะวันหยุด"})
+            elif avg_sd > 60: # Red range: แกว่งไปมา
+                insights.append({"id": "A5", "level": "🔴", "priority": 2, "text": f"เวลานอน-ตื่นเฉลี่ยแกว่งมากถึง ±{int(avg_sd)} นาทีในรอบ 7 วัน ความไม่สม่ำเสมอนี้รบกวนจังหวะ Circadian Rhythm อย่างมาก ทำให้คุณภาพการนอนแย่ลงและ Recovery ต่ำ ควรตั้งเวลาเข้านอน-ตื่นให้สม่ำเสมอที่สุด"})
+
 
     history = data.get("history", [])
     if history:

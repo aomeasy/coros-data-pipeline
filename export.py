@@ -127,13 +127,14 @@ def compute_full_analysis(sleep_for_analysis, daily_records, activities, journal
     if len(recent_rr) >= 5:
         resp_rate_trend = round((recent_rr[-1] - recent_rr[0]) / len(recent_rr), 3)
 
+    # Recovery Score
     rec_score = sleep_analysis.recovery_score(
         hrv_today=hrv_today_ln,
         hrv_baseline=baseline_hrv,
         rhr_today=latest.get("resting_hr"),
         rhr_baseline=baseline_rhr,
         sleep_performance_pct=sp_pct,
-        sleep_efficiency_pct=latest.get("duration_min", 0) / max(latest.get("time_in_bed_min", 1), 1) * 100 if latest else 80,
+        sleep_efficiency_pct=sleep_analysis.sleep_efficiency(latest), # Use standard sleep_efficiency
         spo2_flag=spo2_flag,
         skin_temp_flag=skin_temp_flag,
         resp_rate_z=resp_rate_z,

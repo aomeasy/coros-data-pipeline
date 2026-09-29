@@ -389,6 +389,11 @@ def generate_daily_narrative(
         f"นอน {h} ชม {m} นาที — Sleep Efficiency {eff:.0f}%"
     )
 
+    # เพิ่มการปัดเศษของ Sleep Efficiency เพื่อให้ตรงกับ fmt ใน telegram_notify.py
+    if sleep:
+        eff_from_sleep_analysis = sleep_analysis.sleep_efficiency(sleep)
+        summary = re.sub(r'Sleep Efficiency \d+%', f"Sleep Efficiency {int(round(eff_from_sleep_analysis))}%", summary)
+
     return {
         "summary": summary,
         "sections": sections,
