@@ -7,6 +7,8 @@ narrative_engine.py — Phase 6: Narrative Insight Engine
 
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+import re
+import sleep_analysis
 
 
 # =============================================================================
