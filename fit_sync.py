@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""ดาวน์โหลดไฟล์ FIT ของกิจกรรมที่ยังไม่เคยโหลด แล้วเก็บจุดข้อมูลลง SQLite"""
+import io, json, shutil, subprocess
+from datetime import datetime
+
+import requests
+from fitparse import FitFile
+
+import coros_db
+
+MAX_PER_RUN = 3                      # กันชนโควตาดาวน์โหลดต่อวัน (workflow รัน 3 รอบ/วัน)
+COROS = shutil.which("coros-mcp") or "coros-mcp"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS activity_records (
+  activity_id TEXT NOT NULL,
+  ts TEXT NOT NULL,
+  lat REAL, lon REAL,
+  hr INTEGER, speed REAL, altitude REAL,
+  cadence INTEGER, distance REAL, power INTEGER,
+  PRIMARY KEY (activity_id, ts)
+);
+CREATE TABLE IF NOT EXISTS fit_imported (
+  activity_id TEXT PRIMARY KEY,
+  status TEXT,
+  n_records INTEGER,
+  imported_at TEXT
+);
+"""
+
+def call_tool(tool, args):
+    r = subprocess.run(
+        [COROS, "call-tool", "--tool", tool, "--arguments-json", json.dumps(args)],
+        capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        raise RuntimeError(r.stderr.strip() or r.stdout.strip())
+    return json.loads(r.stdout)
+
+def first_url(obj):
+    if isinstance(obj, str) and obj.startswith("http"):
+        return obj
+    if isinstance(obj, dict):
+        for v in obj.values():
+            u = first_url(v)
+            if u:
+                return u
+    if isinstance(obj, list):
+        for v in obj:
+            u = first_url(v)
+            if u:
+                return u
+    return None
+
+def parse_fit(data):
+    for m in FitFile(io.BytesIO(data)).get_messages("record"):
+        d = {f.name: f.value for f in m}
+        if not d.get("timestamp"):
+            continue
+        lat, lon = d.get("position_lat"), d.get("position_long")
+        yield (
+            d["timestamp"].isoformat(),
+            lat * 180 / 2**31 if lat is not None else None,
+            lon * 180 / 2**31 if lon is not None else None,
+            d.get("heart_rate"),
+            d.get("enhanced_speed", d.get("speed")),
+            d.get("enhanced_altitude", d.get("altitude")),
+            d.get("cadence"), d.get("distance"), d.get("power"),
+        )
+
+def main():
+    conn = coros_db.get_conn()
+    conn.executescript(SCHEMA)
+
+    pending = conn.execute("""
+        SELECT activity_id, sport_type FROM activities
+        WHERE activity_id NOT IN (SELECT activity_id FROM fit_imported)
+        ORDER BY start_time DESC LIMIT ?
+    """, (MAX_PER_RUN,)).fetchall()
+    print(f"pending: {len(pending)}")
+
+    for row in pending:
+        aid = row["activity_id"]
+        try:
+            sport = int(row["sport_type"])
+        except (TypeError, ValueError):
+            print(f"{aid}: sport_type ใช้ไม่ได้ ({row['sport_type']!r}) ข้าม")
+            continue
+        try:
+            res = call_tool("queryActivityFitFileDownloadUrls",
+                            {"labelId": str(aid), "sportType": sport})
+            url = first_url(res)
+            now = datetime.now().isoformat()
+            if not url:
+                print(f"{aid}: ไม่มี URL -> {json.dumps(res)[:300]}")
+                conn.execute("INSERT OR REPLACE INTO fit_imported VALUES (?,?,?,?)",
+                             (aid, "no_url", 0, now))
+                conn.commit()
+                continue
+            data = requests.get(url, timeout=120).content
+            rows = [(aid, *r) for r in parse_fit(data)]
+            conn.executemany(
+                "INSERT OR IGNORE INTO activity_records "
+                "(activity_id,ts,lat,lon,hr,speed,altitude,cadence,distance,power) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            conn.execute("INSERT OR REPLACE INTO fit_imported VALUES (?,?,?,?)",
+                         (aid, "ok", len(rows), now))
+            conn.commit()
+            print(f"{aid}: {len(rows)} records")
+        except Exception as e:
+            print(f"{aid}: error {e}")   # ไม่บันทึกสถานะ รอบหน้าลองใหม่
+            break                         # มักเป็นโควตาเต็ม หยุดเลย
+    conn.close()
+
+if __name__ == "__main__":
+    main()
