@@ -23,6 +23,7 @@ import requests
 
 BATCH = 20        # จำนวนคำสั่งต่อ 1 batch ตอน push
 PAGE = 500        # จำนวนแถวต่อหน้าตอน pull
+SKIP_PULL = {"activity_records"}   # จุดข้อมูลรายวินาที ไม่ต้องดึงกลับเครื่อง
 
 
 def _cfg():
@@ -103,7 +104,45 @@ def build(table, row, cols):
             params.append(str(v))
     sql = f"INSERT OR REPLACE INTO {q(table)} ({','.join(names)}) VALUES ({','.join(marks)})"
     return {"sql": sql, "params": params}
+def multi_insert(table, rows, cols):
+    marks, params = [], []
+    for r in rows:
+        m = []
+        for c in cols:
+            if r[c] is None:
+                m.append("NULL")
+            else:
+                m.append("?")
+                params.append(str(r[c]))
+        marks.append("(" + ",".join(m) + ")")
+    sql = (f"INSERT OR REPLACE INTO {q(table)} ({','.join(q(c) for c in cols)}) "
+           f"VALUES {','.join(marks)}")
+    return {"sql": sql, "params": params}
 
+
+def push_records(conn):
+    """ส่งเฉพาะกิจกรรมที่ D1 ยังมีแถวไม่ครบ"""
+    remote = {r["activity_id"]: r["n"] for r in call({"sql":
+        "SELECT activity_id, COUNT(*) AS n FROM activity_records GROUP BY activity_id"
+    })[0]["results"]}
+    local = conn.execute(
+        "SELECT activity_id, COUNT(*) AS n FROM activity_records GROUP BY activity_id"
+    ).fetchall()
+    cols = ["activity_id", "ts", "lat", "lon", "hr", "speed",
+            "altitude", "cadence", "distance", "power"]
+    sent = 0
+    for aid, n in local:
+        if remote.get(aid) == n:
+            continue
+        rows = conn.execute(
+            "SELECT * FROM activity_records WHERE activity_id=?", (aid,)).fetchall()
+        # 10 คอลัมน์ x 10 แถว = 100 params (เพดานต่อคำสั่งของ D1)
+        stmts = [multi_insert("activity_records", rows[i:i + 10], cols)
+                 for i in range(0, len(rows), 10)]
+        for i in range(0, len(stmts), BATCH):
+            call({"batch": stmts[i:i + BATCH]})
+        sent += len(rows)
+    print(f"push activity_records: ส่งใหม่ {sent} แถว")
 
 def push():
     conn = local_conn()
@@ -131,8 +170,12 @@ def push():
         except SystemExit as e:
             print(f"push: ข้าม index {name} ({e})")
 
+
     # 3) ส่งข้อมูล
     for name in lt:
+        if name == "activity_records":
+            push_records(conn)
+            continue
         rows = conn.execute(f"SELECT * FROM {q(name)}").fetchall()
         cols = rows[0].keys() if rows else []
         for i in range(0, len(rows), BATCH):
