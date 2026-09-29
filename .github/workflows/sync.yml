@@ -11,6 +11,12 @@ on:
         description: 'ครั้งแรกครั้งเดียว: ส่ง coros_cache.db ที่ commit อยู่ขึ้น D1 ก่อน pull'
         type: boolean
         default: false
+      chat_id:
+        description: 'Telegram chat id ที่จะให้ส่งสรุปไป (เว้นว่าง = ใช้ค่าจาก secret)'
+        type: string
+        required: false
+        default: ''
+        
 
 # กันสองรอบรันซ้อนกัน (เช่น รันมือตอนที่ cron ทำงานอยู่)
 concurrency:
@@ -88,7 +94,7 @@ jobs:
       - name: Send Telegram Summary
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID: ${{ github.event.inputs.chat_id || secrets.TELEGRAM_CHAT_ID }}
           PYTHONIOENCODING: utf-8
         run: python telegram_notify.py
 
@@ -117,3 +123,18 @@ jobs:
             git commit -m "Sync $ts"
             git push
           }
+
+
+      - name: Notify on failure
+        if: ${{ failure() }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ github.event.inputs.chat_id || secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          $body = @{
+            chat_id = $env:TELEGRAM_CHAT_ID
+            text    = "❌ COROS sync ล้มเหลว`n$env:RUN_URL"
+          }
+          Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$($env:TELEGRAM_BOT_TOKEN)/sendMessage" -Body $body
+          
