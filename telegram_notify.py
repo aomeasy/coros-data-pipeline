@@ -22,6 +22,7 @@ Environment variables ที่ต้องมี:
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -795,7 +796,6 @@ def build_message(data):
             time_label = ""
             if start_time_str:
                 try:
-                    from datetime import datetime
                     dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
                     time_label = f" (เวลา {dt.strftime('%H:%M')})"
                 except:
@@ -922,56 +922,54 @@ def build_message(data):
     if sleep:
         lines.append("")
         sleep_date_str = sleep.get('date', '')
-        
-        # แสดงเวลาเข้านอน-ตื่น ถ้ามีข้อมูล
-        sleep_time_label = ""
+
         if normalize_date(sleep_date_str) == yesterday_str():
             lines.append("😴 <b>การนอน (เมื่อคืน)</b>")
         else:
             lines.append("😴 <b>การนอน</b>")
-        
-    # --- Sleep summary (start_time / end_time) --- 
-    # The previous code for displaying duration and start/end times was mixed with other sleep metrics.
-    # Move it here to display together at the top of the sleep section.
-    lines.append(f"  ระยะเวลารวม: {minutes_to_hm(total_sleep_duration)}")
 
-    # ดึงเวลาเข้านอน - ตื่นนอน จาก summary_json (ถ้ามี)
-    summary_json = sleep.get('summary_json')
-    if summary_json:
-        try:
-            import json
-            s_data = json.loads(summary_json)
-            start_str = s_data.get("startTime")  # COROS มักจะเก็บ startTime / endTime ใน summary_json
-            end_str = s_data.get("endTime")
-            if start_str and end_str:
-                # Reformat date/time as requested: "คืนที่ผ่านมา 22:19 – 06:14"
-                start_time_obj = datetime.strptime(start_str, "%Y-%m-%d %H:%M")
-                end_time_obj = datetime.strptime(end_str, "%Y-%m-%d %H:%M")
-                lines.append(f"  ⏰ คืนที่ผ่านมา {start_time_obj.strftime('%H:%M')} – {end_time_obj.strftime('%H:%M')}")
-        except:
-            pass
-    # --- End Sleep summary ---
+        total_sleep_duration = sleep.get('duration_min') or 0
+        lines.append(f"  ระยะเวลารวม: {minutes_to_hm(total_sleep_duration)}")
 
-    # Display Deep/Light/REM/Awake percentages and minutes
+        # เวลาเข้านอน - ตื่นนอน จาก summary_json (ถ้ามี)
+        summary_json = sleep.get('summary_json')
+        if summary_json:
+            try:
+                s_data = json.loads(summary_json)
+                start_str = s_data.get("startTime")
+                end_str = s_data.get("endTime")
+                if start_str and end_str:
+                    start_time_obj = datetime.strptime(start_str, "%Y-%m-%d %H:%M")
+                    end_time_obj = datetime.strptime(end_str, "%Y-%m-%d %H:%M")
+                    lines.append(
+                        f"  ⏰ คืนที่ผ่านมา {start_time_obj.strftime('%H:%M')} – "
+                        f"{end_time_obj.strftime('%H:%M')}"
+                    )
+            except Exception:
+                pass
 
-        if deep_pct is not None and total_sleep_duration > 0:
-            deep_min = int(total_sleep_duration * deep_pct / 100)
-            lines.append(f"  🟦 Deep: {fmt(deep_pct, '% ', 0)} ({minutes_to_hm(deep_min)})")
-        
-        if light_pct is not None and total_sleep_duration > 0:
-            # Calculate light_min by subtracting deep, rem, and awake from total
-            deep_rem_awake_min = deep_min + rem_min + awake_min
-            light_min = total_sleep_duration - deep_rem_awake_min # Ensure sum is exactly total_sleep_duration
+        # Deep / Light / REM / Awake เป็นทั้ง % และเวลา
+        deep_pct = sleep.get('deep_sleep_pct')
+        light_pct = sleep.get('light_sleep_pct')
+        rem_pct = sleep.get('rem_sleep_pct')
+        awake_min = sleep.get('awake_min') or 0
 
-            lines.append(f"  🟨 Light: {fmt(light_pct, '% ', 0)} ({minutes_to_hm(light_min)})")
-        
-        if rem_pct is not None and total_sleep_duration > 0:
-            rem_min = int(total_sleep_duration * rem_pct / 100)
-            lines.append(f"  🟪 REM: {fmt(rem_pct, '% ', 0)} ({minutes_to_hm(rem_min)})")
-        
-        # Add Awake to the list with percentage
-        lines.append(f"  ⚪ Awake: {fmt(awake_pct, '% ', 0)} ({minutes_to_hm(awake_min)})")
-        
+        deep_min = int(total_sleep_duration * deep_pct / 100) if deep_pct is not None else 0
+        rem_min = int(total_sleep_duration * rem_pct / 100) if rem_pct is not None else 0
+
+        if total_sleep_duration > 0:
+            if deep_pct is not None:
+                lines.append(f"  🟦 Deep: {fmt(deep_pct, '%', 0)} ({minutes_to_hm(deep_min)})")
+            if light_pct is not None:
+                # Light = ส่วนที่เหลือ เพื่อให้ผลรวมตรงกับระยะเวลารวมพอดี
+                light_min = max(total_sleep_duration - deep_min - rem_min - awake_min, 0)
+                lines.append(f"  🟨 Light: {fmt(light_pct, '%', 0)} ({minutes_to_hm(light_min)})")
+            if rem_pct is not None:
+                lines.append(f"  🟪 REM: {fmt(rem_pct, '%', 0)} ({minutes_to_hm(rem_min)})")
+            if awake_min:
+                awake_pct = awake_min / total_sleep_duration * 100
+                lines.append(f"  ⚪ Awake: {fmt(awake_pct, '%', 0)} ({minutes_to_hm(awake_min)})")
+
         baselines = data.get("baselines", {})
         hrv_today = sleep.get('hrv')
         hrv_baseline_raw = baselines.get("hrv_ms")
@@ -1181,7 +1179,6 @@ def build_message(data):
                 race_date_str = user_config.get("race_date")
                 if race_date_str:
                     try:
-                        from datetime import datetime
                         race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
                         days_to_race = (race_dt - datetime.now()).days
                         if 0 < days_to_race <= 14:
@@ -1216,7 +1213,6 @@ def build_message(data):
             race_date_str = user_config.get("race_date")
             if race_date_str:
                 try:
-                    from datetime import datetime
                     race_dt = datetime.strptime(race_date_str, "%Y-%m-%d")
                     days_to_race = (race_dt - datetime.now()).days
                     if 0 < days_to_race <= 14:
