@@ -12,17 +12,30 @@ Environment variables ที่ต้องมี:
     TELEGRAM_BOT_TOKEN  - token ของ bot (ขอจาก @BotFather)
     TELEGRAM_CHAT_ID    - chat id ปลายทางที่จะส่งข้อความไปหา
 
-การเปลี่ยนแปลงรอบนี้ (ส่วนอื่นคงเดิมทั้งหมด):
+การเปลี่ยนแปลงรอบก่อนหน้า (คงเดิม):
   1. today_str()/yesterday_str() ใช้เวลา ICT (UTC+7) แทนนาฬิกา UTC ของ runner
-  2. sport_type แสดงเป็นชื่อกีฬา (รู้จักเฉพาะรหัสที่ยืนยันแล้ว — รหัสอื่นแสดงเป็น "กีฬา (รหัส N)")
-  3. ACWR: ถ้าประวัติข้อมูลยังไม่ถึง 28 วัน แสดง "ยังไม่ประเมิน (ข้อมูล X/28 วัน)"
-     แทนตัวเลขพร้อมป้ายความเสี่ยง (ประวัติสั้น ค่า ACWR ยังไม่น่าเชื่อถือ)
-  4. บรรทัด "HR เฉลี่ย/สูงสุด" ซ่อนเมื่อไม่มีข้อมูลทั้งคู่ (sync ไม่เคยเก็บค่านี้ใน daily_health)
+  2. sport_type แสดงเป็นชื่อกีฬา (รู้จักเฉพาะรหัสที่ยืนยันแล้ว)
+  3. ACWR: ถ้าประวัติข้อมูลยังไม่ถึง 28 วัน แสดง "ยังไม่ประเมิน"
+  4. บรรทัด "HR เฉลี่ย/สูงสุด" ซ่อนเมื่อไม่มีข้อมูลทั้งคู่
+
+การเปลี่ยนแปลงรอบนี้ (เฉพาะรูปแบบการแสดงผล — logic การคำนวณและค่าข้อมูลคงเดิมทั้งหมด):
+  A. แบ่งข้อความเป็น 2 ข้อความ: build_part1 (ภาพรวม/กิจกรรม/ฟิต/ภาระซ้อม/สุขภาพ)
+     และ build_part2 (การนอน/ฟื้นฟู/คำแนะนำ/Strain/insights/Journal)
+     ใส่เลขหน้า (1/2) (2/2) แบบไดนามิก — ถ้ามีข้อความเดียวจะไม่ใส่เลข
+  B. วันที่ในหัวข้อเป็นภาษาไทย (29 กันยายน 2026)
+  C. บรรทัด "สรุปวันนี้" ประกอบจากค่าใน data โดยตรง (ไม่ใช้ regex แก้ narrative แล้ว)
+     ใช้ narrative จาก data.json เป็น fallback เมื่อประกอบบรรทัดไม่ได้
+  D. emoji: 1 ตัวต่อหัวข้อหลัก, สีสถานะ 🟢🟡🔴 ท้ายค่า, บรรทัดข้อมูลไม่ใส่ emoji นำหน้า
+  E. เวลาแสดงเป็นไทย (7 ชม. 55 นาที / 1 ชม. 40 น.), ก้าวมีจุลภาค
+  F. insights แยกเป็นหัวข้อ + รายละเอียดเยื้อง (A4/A5)
+  G. ค่าแกว่งเวลานอนใน insight A5 ปัดเศษแบบเดียวกับบรรทัดความสม่ำเสมอ (±32 ตรงกัน)
+  H. ความทนทาน: html.escape ข้อความจากภายนอก, กัน TypeError ของกฎ E1,
+     ส่งทีละข้อความและ log แยกว่าข้อความไหนล้ม
 """
 
+import html
 import json
 import os
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -47,6 +60,9 @@ SPORT_NAMES = {
     "904": "โยคะ/สมาธิ",
 }
 
+TH_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+             "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+
 
 # =============================================================================
 # Helpers
@@ -59,6 +75,20 @@ def today_str():
 
 def yesterday_str():
     return (datetime.now(ICT) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def th_date(date_str):
+    """'2026-09-29' -> '29 กันยายน 2026' (ปี ค.ศ.) — parse ไม่ได้คืนค่าเดิม"""
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        return f"{d.day} {TH_MONTHS[d.month - 1]} {d.year}"
+    except (ValueError, TypeError):
+        return str(date_str)
+
+
+def esc(text):
+    """escape ข้อความจากภายนอก เพราะส่งด้วย parse_mode=HTML"""
+    return html.escape(str(text), quote=False)
 
 
 def normalize_date(raw):
@@ -102,6 +132,16 @@ def fmt(value, unit="", digits=1, fallback="—"):
         return fallback
 
 
+def fmt_thousands(value, fallback="—"):
+    """จำนวนเต็มพร้อมจุลภาค เช่น 7981 -> 7,981"""
+    if value is None:
+        return fallback
+    try:
+        return f"{int(round(float(value))):,}"
+    except (TypeError, ValueError):
+        return fallback
+
+
 def format_pace(seconds_per_km):
     """แปลงวินาที/กม. เป็น นาที:วินาที/km"""
     if not seconds_per_km:
@@ -114,22 +154,9 @@ def format_pace(seconds_per_km):
     except (ValueError, TypeError):
         return None
 
-def seconds_to_hm(seconds):
-    """แปลงวินาที -> '1h 23m'"""
-    if seconds is None:
-        return "—"
-    try:
-        seconds = int(seconds)
-    except (TypeError, ValueError):
-        return "—"
-    h, rem = divmod(seconds, 3600)
-    m = rem // 60
-    if h:
-        return f"{h}h {m}m"
-    return f"{m}m"
 
-
-def minutes_to_hm(minutes):
+def minutes_to_hm(minutes, short=False):
+    """นาที -> '7 ชม. 55 นาที' (short=True -> '1 ชม. 40 น.')"""
     if minutes is None:
         return "—"
     try:
@@ -137,9 +164,21 @@ def minutes_to_hm(minutes):
     except (TypeError, ValueError):
         return "—"
     h, m = divmod(minutes, 60)
+    unit_m = "น." if short else "นาที"
     if h:
-        return f"{h}h {m}m"
-    return f"{m}m"
+        return f"{h} ชม. {m} {unit_m}"
+    return f"{m} {unit_m}"
+
+
+def seconds_to_hm(seconds, short=False):
+    """วินาที -> '5 ชม. 13 นาที'"""
+    if seconds is None:
+        return "—"
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError):
+        return "—"
+    return minutes_to_hm(seconds // 60, short=short)
 
 
 def sport_label(code):
@@ -175,7 +214,7 @@ def acwr_line(acwr, history_days=None):
     if acwr is None:
         return f"  ACWR: {fmt(acwr, '', 2)}"
     if history_days is not None and history_days < ACWR_MIN_HISTORY_DAYS:
-        return f"  ACWR: ยังไม่ประเมิน (ข้อมูล {history_days}/{ACWR_MIN_HISTORY_DAYS} วัน)"
+        return f"  ACWR: ยังไม่ประเมิน (มีข้อมูล {history_days} จาก {ACWR_MIN_HISTORY_DAYS} วัน)"
     return f"  ACWR: {fmt(acwr, '', 2)}{acwr_flag(acwr)}"
 
 
@@ -299,6 +338,16 @@ def _history_days_from_activities(activities, today):
     return max(0, (last - first).days + 1)
 
 
+def load_data_json():
+    """โหลด docs/data.json ที่ export.py สร้างไว้ — คืน {} ถ้าอ่านไม่ได้"""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"),
+                  "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
 # =============================================================================
 # Data gathering
 # =============================================================================
@@ -348,20 +397,20 @@ def gather_today_summary():
 
     # --- journal (manual log): เก็บด้วยมือ ปกติจะเป็น format เดียวกันเสมอ แต่กันไว้ก่อน ---
     journal_today = coros_db.get_journal_by_date(date) or coros_db.get_journal_by_date(date.replace("-", ""))
-    
+
     # --- ดึงข้อมูลวิเคราะห์ SQI, Recovery, Illness Risk จาก export.py/app.py ---
     import sleep_analysis
-    
+
     sqi = None
     recovery_score = None
     illness_risk = None
     baselines = {}
-    
+
     if sleep_today:
         # คำนวณ SQI
         sleep_for_sqi = [sleep_today]
         sqi = sleep_analysis.calculate_sqi(sleep_for_sqi)
-        
+
         # คำนวณ Recovery Score
         recent_sleep = sleep_rows[:7]  # 7 วันล่าสุด
         baselines = {}
@@ -369,18 +418,18 @@ def gather_today_summary():
             baselines[metric] = sleep_analysis.compute_baseline(
                 recent_sleep, [metric], window=7
             )
-        
+
         recovery_score = sleep_analysis.recovery_score(
             hrv_today=sleep_today.get("hrv"),
             hrv_baseline=baselines.get("hrv_ms"),
             rhr_today=sleep_today.get("resting_hr"),
             rhr_baseline=baselines.get("resting_hr"),
             sleep_performance_pct=min((sleep_today.get("duration_min") or 0) / 480 * 100, 100),
-            sleep_efficiency_pct=((sleep_today.get("duration_min") or 0) / 
+            sleep_efficiency_pct=((sleep_today.get("duration_min") or 0) /
                                   ((sleep_today.get("duration_min") or 0) + (sleep_today.get("awake_min") or 0)) * 100
                                   if (sleep_today.get("duration_min") or 0) + (sleep_today.get("awake_min") or 0) > 0 else 0)
         )
-        
+
         # คำนวณ Illness Risk
         illness_risk = sleep_analysis.compute_illness_risk(sleep_today, baselines)
 
@@ -399,7 +448,7 @@ def gather_today_summary():
     if date:
         dur = sleep_today.get("duration_min") if sleep_today else None
         eff = sleep_analysis.sleep_efficiency(sleep_today) if sleep_today else None
-        
+
         coros_db.upsert_daily_metrics_cache({
             "date": date,
             "ctl": ctl_now,
@@ -421,9 +470,9 @@ def gather_today_summary():
     # --- หนี้การนอน (เป้านอนปรับได้ใน user_config.json: "sleep_target_min") ---
     sleep_target = load_user_config().get("sleep_target_min", SLEEP_TARGET_MIN)
     sleep_debt = calc_sleep_debt(sleep_rows, date, target_min=sleep_target)
-    
+
     sleep_reg = calc_sleep_regularity(sleep_rows, date)
-    
+
     weekly_load = calc_weekly_load(all_recent_activities, date)
 
     hrv_trend = calc_metric_trend(sleep_rows, date, "hrv")
@@ -574,19 +623,16 @@ def sleep_debt_line(sd):
     if not sd:
         return None
     if sd["debt_min"] is None:
-        return f"  💤 หนี้การนอน: ข้อมูลยังไม่พอ ({sd['nights']}/{SLEEP_DEBT_WINDOW} คืน)"
+        return f"  หนี้การนอน: ข้อมูลยังไม่พอ ({sd['nights']}/{SLEEP_DEBT_WINDOW} คืน)"
 
     debt = sd["debt_min"]
-    # Convert sleep_debt['debt_min'] to hours and minutes for the message
-    debt_h, debt_m = divmod(debt, 60)
-    debt_hm_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
-    
-    # Calculate daily increase needed (simple suggestion)
+    debt_hm_str = minutes_to_hm(debt)
+
+    # คำนวณเวลาที่ควรนอนเพิ่มต่อคืน (คำแนะนำแบบง่าย)
     daily_increase_min = int(debt / sd["nights"]) if sd["nights"] > 0 else 0
-    if daily_increase_min == 0 and debt > 0: # If debt is very small, suggest 5 min
+    if daily_increase_min == 0 and debt > 0:  # หนี้น้อยมาก แนะนำ 5 นาที
         daily_increase_min = 5
 
-    label_part = ""
     if debt < 60:
         label_part = "🟢 ปกติ"
     elif debt < 180:
@@ -596,12 +642,11 @@ def sleep_debt_line(sd):
     else:
         label_part = "🔴 สูง ควรนอนชดเชย"
 
-    # New phrasing as requested by user
-    return (
-        f"  💤 หนี้การนอน 7 วัน: {label_part} "
-        f"| ช่วง 7 วันที่ผ่านมา คุณนอนขาดไปรวม {debt_hm_str} "
-        f"ควรนอนเพิ่มคืนละประมาณ {daily_increase_min} นาที"
-    )
+    return "\n".join([
+        f"  หนี้การนอน 7 วัน: {label_part}",
+        f"    7 วันที่ผ่านมานอนขาดรวม {debt_hm_str}",
+        f"    ควรนอนเพิ่มคืนละประมาณ {daily_increase_min} นาที",
+    ])
 
 
 def calc_sleep_regularity(sleep_rows, today, window=7):
@@ -614,7 +659,7 @@ def calc_sleep_regularity(sleep_rows, today, window=7):
 
     start_times = []
     end_times = []
-    
+
     for r in sleep_rows or []:
         d = normalize_date(r.get("date"))
         if not d: continue
@@ -622,7 +667,7 @@ def calc_sleep_regularity(sleep_rows, today, window=7):
             dt = datetime.strptime(d, "%Y-%m-%d")
         except (ValueError, TypeError):
             continue
-            
+
         if start <= dt <= end:
             try:
                 s_data = json.loads(r.get("summary_json") or "{}")
@@ -632,25 +677,25 @@ def calc_sleep_regularity(sleep_rows, today, window=7):
                     # Parse "2026-09-26 23:17"
                     st = datetime.strptime(st_str, "%Y-%m-%d %H:%M")
                     et = datetime.strptime(et_str, "%Y-%m-%d %H:%M")
-                    
-                    # แปลงเวลาเป็นนาทีจากเที่ยงคืน 
+
+                    # แปลงเวลาเป็นนาทีจากเที่ยงคืน
                     # ให้เที่ยงคืน = 0 ถ้าเป็นเมื่อวานก่อนเที่ยงคืนให้คิดเป็นลบ
-                    # เอาแค่นาทีรวมสำหรับหา SD 
-                    # สมมติ 기준เวลาที่เข้านอนคือ 12:00 วันก่อนหน้า - 12:00 วันนี้
+                    # เอาแค่นาทีรวมสำหรับหา SD
+                    # สมมติเวลาที่เข้านอนคือ 12:00 วันก่อนหน้า - 12:00 วันนี้
                     # วิธีง่ายๆ: หาชั่วโมงและนาที แล้วบวกด้วย 24*60 ถ้าชั่วโมง < 12
                     st_mins = st.hour * 60 + st.minute
                     if st.hour < 12:
                         st_mins += 24 * 60
                     start_times.append(st_mins)
-                    
+
                     et_mins = et.hour * 60 + et.minute
                     end_times.append(et_mins)
             except Exception:
                 pass
-                
+
     if len(start_times) < 4:
         return {"days": len(start_times)}
-        
+
     import statistics
     try:
         st_sd = statistics.stdev(start_times)
@@ -662,11 +707,10 @@ def calc_sleep_regularity(sleep_rows, today, window=7):
 def sleep_regularity_line(reg):
     if not reg or "start_sd_min" not in reg:
         return None
-    
+
     st_sd = reg["start_sd_min"]
     et_sd = reg["end_sd_min"]
-    # Add clarification about what "แกว่งเฉลี่ย" means
-    avg_sd_val = int(round((st_sd + et_sd) / 2)) # Use rounded average SD
+    avg_sd_val = int(round((st_sd + et_sd) / 2))  # ค่าแกว่งเฉลี่ย (ปัดเศษ)
 
     if avg_sd_val <= 30:
         icon, note = "🟢", "สม่ำเสมอดีมาก"
@@ -674,9 +718,11 @@ def sleep_regularity_line(reg):
         icon, note = "🟡", "ค่อนข้างสม่ำเสมอ"
     else:
         icon, note = "🔴", "แกว่งไปมา"
-        
-    # Use the new avg_sd_val in the output message
-    return (f"  🔄 ความสม่ำเสมอ: {icon} {note} (แกว่งเฉลี่ยเวลาเข้านอน/ตื่นนอน ±{avg_sd_val} นาที)")
+
+    return "\n".join([
+        f"  ความสม่ำเสมอ: {icon} {note}",
+        f"    เวลาเข้านอน/ตื่นนอนแกว่งเฉลี่ย ±{avg_sd_val} นาที",
+    ])
 
 
 WEEKLY_MIN_BASE_KM = 5        # สัปดาห์ก่อนต้องวิ่งอย่างน้อยเท่านี้ถึงจะคิด %
@@ -747,139 +793,170 @@ def weekly_load_lines(wl):
     # ระยะวิ่ง + เปรียบเทียบสัปดาห์ก่อน
     if cur["run_km"] > 0:
         cmp_txt = ""
+        flag_line = None
         if wl["has_prev"] and prev["run_km"] >= WEEKLY_MIN_BASE_KM:
             pct = (cur["run_km"] - prev["run_km"]) / prev["run_km"] * 100
             sign = "+" if pct > 0 else ""
+            cmp_txt = f" ({sign}{pct:.0f}% จากสัปดาห์ก่อนที่ {prev['run_km']:.1f} km)"
             if pct > 20:
-                flag = " 🔴 เพิ่มเร็วเกินไป"
+                flag_line = "  🔴 เตือน: เพิ่มเร็วเกินไป"
             elif pct > 10:
-                flag = " 🟡 เพิ่มเร็ว"
+                flag_line = "  🟡 ระวัง: เพิ่มเร็ว"
             elif pct < -30:
-                flag = " 🔵 ลดลงมาก"
+                flag_line = "  🔵 ลดลงมาก"
             else:
-                flag = " ✅"
-            cmp_txt = f" ({sign}{pct:.0f}% จากสัปดาห์ก่อน {prev['run_km']:.1f} km){flag}"
+                cmp_txt += " ✅"
         elif not wl["has_prev"]:
             cmp_txt = " (ยังไม่มีข้อมูลสัปดาห์ก่อนให้เทียบ)"
-        lines.append(f"  🏃 วิ่งรวม: {cur['run_km']:.1f} km{cmp_txt}")
+        lines.append(f"  วิ่งรวม: {cur['run_km']:.1f} km{cmp_txt}")
+        if flag_line:
+            lines.append(flag_line)
 
     # เวลารวม + วันที่ซ้อม
     dur_txt = seconds_to_hm(cur["dur_s"])
     if wl["has_prev"] and prev["dur_s"] > 0:
         pct_t = (cur["dur_s"] - prev["dur_s"]) / prev["dur_s"] * 100
         dur_txt += f" ({'+' if pct_t > 0 else ''}{pct_t:.0f}%)"
-    lines.append(
-        f"  ⏱ เวลารวม: {dur_txt} | ซ้อม {len(cur['days'])} วัน ({cur['sessions']} ครั้ง)"
-    )
+    lines.append(f"  เวลารวม: {dur_txt}")
+    lines.append(f"  ซ้อม {len(cur['days'])} วัน รวม {cur['sessions']} ครั้ง")
     return lines
 
-def build_message(data):
+
+def _band_icon(band):
+    return "🟢" if band == "green" else "🟡" if band == "yellow" else "🔴"
+
+
+def build_part1(data):
+    """ข้อความที่ 1: ภาพรวม / กิจกรรม / ความฟิต / ภาระซ้อม / สุขภาพวันนี้"""
+    import sleep_analysis
+
     date = data["date"]
     activities = data["activities"]
     sleep = data["sleep"]
     health = data["health"]
     strain = data["strain"]
-    journal = data["journal"]
+    recovery = data.get("recovery_score")
+    full_data = load_data_json()
 
-    lines = [f"🏃 <b>COROS Daily Summary</b> — {date}"]
+    lines = [f"🏃 <b>COROS Daily Summary</b>", th_date(date)]
+
+    # --- สรุปวันนี้ (ประกอบจากค่าใน data) ---
+    summary_parts = []
+    rec_score_v = (recovery or {}).get("recovery_score")
+    if rec_score_v is not None:
+        rec_band = (recovery or {}).get("band", "")
+        rec_label = "ดีมาก" if rec_band == "green" else "ปานกลาง" if rec_band == "yellow" else "ต่ำ"
+        summary_parts.append(f"Recovery {int(round(rec_score_v))}/100 ({rec_label})")
+    if sleep and sleep.get("duration_min"):
+        summary_parts.append(f"นอน {minutes_to_hm(sleep.get('duration_min'))}")
+        try:
+            eff_v = sleep_analysis.sleep_efficiency(sleep)
+            if eff_v:
+                summary_parts.append(f"ประสิทธิภาพการนอน {eff_v:.0f}%")
+        except Exception:
+            pass
+
+    lines.append("")
+    if summary_parts:
+        lines.append("🤖 <b>สรุปวันนี้</b>")
+        lines.append(" | ".join(summary_parts))
+    else:
+        narrative = (full_data.get("narrative") or {}).get("summary")
+        if narrative:
+            lines.append("🤖 <b>สรุปวันนี้</b>")
+            lines.append(esc(narrative))
 
     # --- กิจกรรม ---
     if activities:
         lines.append("")
-        lines.append("📍 <b>กิจกรรม</b>")
+        lines.append("📍 <b>กิจกรรมวันนี้</b>")
         for act in activities:
-            sport = sport_label(act.get("sport_type"))
+            sport = esc(sport_label(act.get("sport_type")))
             distance_km = (act.get("distance_m") or 0) / 1000
-            
+
             # เวลาที่ทำกิจกรรม (start_time)
             start_time_str = act.get("start_time", "")
             time_label = ""
             if start_time_str:
                 try:
                     dt = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-                    time_label = f" (เวลา {dt.strftime('%H:%M')})"
-                except:
+                    time_label = f" เวลา {dt.strftime('%H:%M')}"
+                except Exception:
                     pass
-            
+
             # ข้อมูลพื้นฐานกิจกรรม
             dur = seconds_to_hm(act.get('duration_s'))
             hr_avg = fmt(act.get('avg_hr'), '', 0)
             hr_max = fmt(act.get('max_hr'), '', 0)
             cals = fmt(act.get('calories'), ' kcal', 0)
-            
+
+            fields = []
             # แสดงระยะทางเฉพาะกีฬาที่มีการเคลื่อนที่ (วิ่ง/ปั่น/เดิน)
-            dist_label = ""
             if act.get("sport_type") in ("100", "200", "900") and distance_km > 0:
-                dist_label = f"{fmt(distance_km, ' km', 2)} | "
-            
+                fields.append(f"ระยะทาง {fmt(distance_km, ' km', 2)}")
+            fields.append(f"เวลา {dur}")
+            fields.append(f"HR เฉลี่ย {hr_avg}" if hr_max == "—" else f"HR เฉลี่ย {hr_avg} / สูงสุด {hr_max}")
+            fields.append(cals)
+
             # ข้อมูลเชิงลึกของการวิ่ง/เดิน
             extra_stats = []
             if act.get("sport_type") in ("100", "900"):
                 pace = format_pace(act.get('avg_pace_s'))
                 if pace: extra_stats.append(f"Pace {pace} /km")
                 if act.get('avg_cadence'): extra_stats.append(f"รอบขา {fmt(act.get('avg_cadence'), ' spm', 0)}")
-                if act.get('ascent_m') and act.get('ascent_m') > 0: 
+                if act.get('ascent_m') and act.get('ascent_m') > 0:
                     extra_stats.append(f"ไต่เขา {fmt(act.get('ascent_m'), ' m', 0)}")
-            
+
             score = act.get('score')
             perf_label = f" (Perf. {int(score)}%)" if score else ""
-            
-            hr_range = f"HR {hr_avg}" if hr_max == "—" else f"HR {hr_avg}-{hr_max}"
-            
-            lines.append(f"  • {sport}{perf_label}{time_label}: {dist_label}{dur} | {hr_range} | {cals}")
+
+            lines.append(f"  {sport}{perf_label}{time_label}")
+            lines.append("  " + " | ".join(fields))
             if extra_stats:
-                lines.append(f"    └ " + " | ".join(extra_stats))
+                lines.append("  " + " | ".join(extra_stats))
     else:
         lines.append("")
-        lines.append("📍 <b>กิจกรรม</b>: ไม่มีบันทึกวันนี้")
-        
-    # --- สรุปภาพรวมรายวัน & ความฟิต ---
-    # ดึง narrative จาก export.py/data.json และแสดงผล
-    # import json # Already imported at top
-    # import os # Already imported at top
-    try:
-        # โหลด full_data จาก data.json ที่ export.py สร้างไว้
-        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"), "r", encoding="utf-8") as f:
-            full_data = json.load(f)
-            
-            narrative = full_data.get("narrative", {}).get("summary")
-            if narrative:
-                # ใส่ recovery score จาก data ที่คำนวณมาแล้ว
-                rec_score = (data.get("recovery_score") or {}).get("recovery_score")
-                if rec_score is not None:
-                    # ปัดเศษลงเพื่อเป็นตัวเลขเดียวกับที่แสดงในส่วน Recovery Score: 74.7/100 (ดีมาก)
-                    narrative = re.sub(r'Recovery\s*\d+/100', f"Recovery {int(round(rec_score))}/100", narrative)
-                lines.insert(1, "")
-                lines.insert(2, f"🤖 <b>สรุป:</b> {narrative}")
-                
-            fitness = full_data.get("training_analytics", {}).get("fitness")
-            if fitness and activities: # แสดงความฟิตถ้ามีกิจกรรม
-                ctl = fitness.get("ctl")
-                atl = fitness.get("atl")
-                tsb = fitness.get("tsb")
-                if ctl is not None and atl is not None:
-                    lines.append("")
-                    lines.append("📈 <b>สถานะความฟิต</b>")
-                    lines.append(f"  • ความฟิต (CTL): {fmt(ctl, '', 1)} | ล้า (ATL): {fmt(atl, '', 1)}")
-                    tsb_sign = "+" if tsb and tsb > 0 else ""
-                    form_label = ""
-                    if tsb is not None:
-                        if tsb > 10: form_label = " (พร้อมซ้อมหนัก/แข่ง)"
-                        elif tsb > 5: form_label = " (สดใส)"
-                        elif tsb > -5: form_label = " (สมดุล)"
-                        elif tsb > -15: form_label = " (ล้าเล็กน้อย)"
-                        else: form_label = " (ล้ามาก ควรพัก)"
-                    lines.append(f"  • ความสด (Form): {tsb_sign}{fmt(tsb, '', 1)}{form_label}")
-            
-            economy = full_data.get("training_analytics", {}).get("economy")
-            if economy and economy.get("recent_economy"):
-                trend = economy.get("trend", "")
-                change = economy.get("economy_change_pct", 0)
-                change_sign = "+" if change > 0 else ""
-                icon = "🟢" if trend == "improving" else "🔴" if trend == "declining" else "🟡"
-                lines.append(f"  • Running Economy: {fmt(economy['recent_economy'], '', 1)} {icon} ({change_sign}{fmt(change, '%', 1)})")
+        lines.append("📍 <b>กิจกรรมวันนี้</b>")
+        lines.append("  ไม่มีบันทึกวันนี้")
 
-    except Exception as e:
+    # --- ความฟิต (แสดงเมื่อมีกิจกรรม) ---
+    try:
+        analytics = full_data.get("training_analytics") or {}
+        fitness = analytics.get("fitness")
+        if fitness and activities:
+            ctl = fitness.get("ctl")
+            atl = fitness.get("atl")
+            tsb = fitness.get("tsb")
+            if ctl is not None and atl is not None:
+                lines.append("")
+                lines.append("📈 <b>สถานะความฟิต</b>")
+                lines.append(f"  ความฟิตสะสม (CTL): {fmt(ctl, '', 1)}")
+                lines.append(f"  ความล้าสะสม (ATL): {fmt(atl, '', 1)}")
+                tsb_sign = "+" if tsb and tsb > 0 else ""
+                form_label = ""
+                form_icon = ""
+                if tsb is not None:
+                    if tsb > 10: form_label = "พร้อมซ้อมหนัก/แข่ง"
+                    elif tsb > 5: form_label = "สดใส"
+                    elif tsb > -5: form_label = "สมดุล"
+                    elif tsb > -15: form_label = "ล้าเล็กน้อย"
+                    else: form_label = "ล้ามาก ควรพัก"
+                    form_icon = "🟢" if tsb > -5 else "🟡" if tsb > -15 else "🔴"
+                form_extra = f" ({form_label}) {form_icon}" if form_label else ""
+                lines.append(f"  ความสดของร่างกาย (Form): {tsb_sign}{fmt(tsb, '', 1)}{form_extra}")
+
+        economy = analytics.get("economy")
+        if economy and economy.get("recent_economy"):
+            trend = economy.get("trend", "")
+            change = economy.get("economy_change_pct", 0) or 0
+            change_sign = "+" if change > 0 else ""
+            icon = "🟢" if trend == "improving" else "🔴" if trend == "declining" else "🟡"
+            word = "ดีขึ้น" if trend == "improving" else "แย่ลง" if trend == "declining" else "ทรงตัว"
+            lines.append(
+                f"  Running Economy: {fmt(economy['recent_economy'], '', 1)} "
+                f"({change_sign}{fmt(change, '%', 1)}) {icon} {word}"
+            )
+    except Exception:
         pass
 
     # --- ภาระซ้อมรายสัปดาห์ ---
@@ -891,32 +968,61 @@ def build_message(data):
     if health:
         lines.append("")
         lines.append("📊 <b>สุขภาพวันนี้</b>")
-        lines.append(f"  👣 ก้าว: {fmt(health.get('steps'), '', 0)}")
-        lines.append(f"  🔥 แคลอรี่รวม: {fmt(health.get('calories_burned'), ' kcal', 0)}")
-        
+        lines.append(f"  ก้าว: {fmt_thousands(health.get('steps'))}")
+        lines.append(f"  แคลอรี่รวม: {fmt(health.get('calories_burned'), ' kcal', 0)}")
+
         stress = health.get('stress_score')
         stress_label = ""
+        stress_icon = ""
         if stress:
             s_val = int(stress)
-            if s_val < 35: stress_label = " (ต่ำ/ผ่อนคลาย)"
-            elif s_val < 55: stress_label = " (ปานกลาง)"
-            else: stress_label = " (สูง)"
-        lines.append(f"  😰 Stress: {fmt(stress, '/100', 0)}{stress_label}")
+            if s_val < 35:
+                stress_label, stress_icon = " (ต่ำ / ผ่อนคลาย)", " 🟢"
+            elif s_val < 55:
+                stress_label, stress_icon = " (ปานกลาง)", " 🟡"
+            else:
+                stress_label, stress_icon = " (สูง)", " 🔴"
+        lines.append(f"  Stress: {fmt(stress, '/100', 0)}{stress_label}{stress_icon}")
         # ซ่อนบรรทัดนี้เมื่อไม่มีข้อมูลทั้งคู่ (sync ยังไม่เคยเก็บ avg/max HR รายวัน)
         if health.get("avg_hr") is not None or health.get("max_hr") is not None:
             lines.append(
-                f"  ❤️ HR เฉลี่ย/สูงสุด: {fmt(health.get('avg_hr'), '', 0)} / "
+                f"  HR เฉลี่ย/สูงสุด: {fmt(health.get('avg_hr'), '', 0)} / "
                 f"{fmt(health.get('max_hr'), '', 0)}"
             )
         if health.get("spo2_avg") is not None:
             lines.append(
-                f"  🫁 SpO2 เฉลี่ย/ต่ำสุด: {fmt(health.get('spo2_avg'), '%', 0)} / "
+                f"  SpO2 เฉลี่ย/ต่ำสุด: {fmt(health.get('spo2_avg'), '%', 0)} / "
                 f"{fmt(health.get('spo2_min'), '%', 0)}"
             )
         if health.get("respiratory_rate") is not None:
-            lines.append(f"  🌬 อัตราการหายใจ: {fmt(health.get('respiratory_rate'), ' /min', 1)}")
+            lines.append(f"  อัตราการหายใจ: {fmt(health.get('respiratory_rate'), ' /min', 1)}")
         if health.get("skin_temp_deviation_c") is not None:
-            lines.append(f"  🌡 อุณหภูมิผิวเบี่ยงเบน: {fmt(health.get('skin_temp_deviation_c'), '°C', 1)}")
+            lines.append(f"  อุณหภูมิผิวเบี่ยงเบน: {fmt(health.get('skin_temp_deviation_c'), '°C', 1)}")
+
+    if not (activities or health or sleep or strain):
+        lines.append("")
+        lines.append("⚠️ ไม่พบข้อมูลใดๆ ของวันนี้ใน database — sync อาจยังไม่สำเร็จ")
+
+    return "\n".join(lines)
+
+
+def build_part2(data):
+    """
+    ข้อความที่ 2: การนอน / การฟื้นฟู / คำแนะนำ / Strain / insights / Journal
+    คืน None ถ้าไม่มีเนื้อหาใดเลย (จะไม่ส่งข้อความที่ 2)
+    """
+    import sleep_analysis
+
+    date = data["date"]
+    activities = data["activities"]
+    sleep = data["sleep"]
+    health = data["health"]
+    strain = data["strain"]
+    journal = data["journal"]
+    recovery = data.get("recovery_score")
+    illness = data.get("illness_risk")
+
+    lines = []
 
     # --- การนอน ---
     if sleep:
@@ -924,9 +1030,9 @@ def build_message(data):
         sleep_date_str = sleep.get('date', '')
 
         if normalize_date(sleep_date_str) == yesterday_str():
-            lines.append("😴 <b>การนอน (เมื่อคืน)</b>")
+            lines.append("<b>การนอน (เมื่อคืน)</b>")
         else:
-            lines.append("😴 <b>การนอน</b>")
+            lines.append("<b>การนอน</b>")
 
         total_sleep_duration = sleep.get('duration_min') or 0
         lines.append(f"  ระยะเวลารวม: {minutes_to_hm(total_sleep_duration)}")
@@ -942,7 +1048,7 @@ def build_message(data):
                     start_time_obj = datetime.strptime(start_str, "%Y-%m-%d %H:%M")
                     end_time_obj = datetime.strptime(end_str, "%Y-%m-%d %H:%M")
                     lines.append(
-                        f"  ⏰ คืนที่ผ่านมา {start_time_obj.strftime('%H:%M')} – "
+                        f"  คืนที่ผ่านมา: {start_time_obj.strftime('%H:%M')} - "
                         f"{end_time_obj.strftime('%H:%M')}"
                     )
             except Exception:
@@ -959,22 +1065,22 @@ def build_message(data):
 
         if total_sleep_duration > 0:
             if deep_pct is not None:
-                lines.append(f"  🟦 Deep: {fmt(deep_pct, '%', 0)} ({minutes_to_hm(deep_min)})")
+                lines.append(f"  Deep (หลับลึก): {fmt(deep_pct, '%', 0)} ({minutes_to_hm(deep_min, short=True)})")
             if light_pct is not None:
                 # Light = ส่วนที่เหลือ เพื่อให้ผลรวมตรงกับระยะเวลารวมพอดี
                 light_min = max(total_sleep_duration - deep_min - rem_min - awake_min, 0)
-                lines.append(f"  🟨 Light: {fmt(light_pct, '%', 0)} ({minutes_to_hm(light_min)})")
+                lines.append(f"  Light (หลับตื้น): {fmt(light_pct, '%', 0)} ({minutes_to_hm(light_min, short=True)})")
             if rem_pct is not None:
-                lines.append(f"  🟪 REM: {fmt(rem_pct, '%', 0)} ({minutes_to_hm(rem_min)})")
+                lines.append(f"  REM: {fmt(rem_pct, '%', 0)} ({minutes_to_hm(rem_min, short=True)})")
             if awake_min:
                 awake_pct = awake_min / total_sleep_duration * 100
-                lines.append(f"  ⚪ Awake: {fmt(awake_pct, '%', 0)} ({minutes_to_hm(awake_min)})")
+                lines.append(f"  Awake (ตื่น): {fmt(awake_pct, '%', 0)} ({minutes_to_hm(awake_min, short=True)})")
 
         baselines = data.get("baselines", {})
         hrv_today = sleep.get('hrv')
         hrv_baseline_raw = baselines.get("hrv_ms")
         hrv_baseline = hrv_baseline_raw.get("baseline") if isinstance(hrv_baseline_raw, dict) else hrv_baseline_raw
-        
+
         rhr_today = sleep.get('resting_hr')
         rhr_baseline_raw = baselines.get("resting_hr")
         rhr_baseline = rhr_baseline_raw.get("baseline") if isinstance(rhr_baseline_raw, dict) else rhr_baseline_raw
@@ -991,44 +1097,43 @@ def build_message(data):
             sign = "+" if diff > 0 else ""
             rhr_str += f" ({sign}{diff:.0f} จากค่าเฉลี่ย {rhr_baseline:.0f})"
 
-        lines.append(f"  💓 HRV: {hrv_str} | Resting HR: {rhr_str}")
-        
+        lines.append(f"  HRV: {hrv_str} | Resting HR: {rhr_str}")
+
         for lbl, key, kind in (("แนวโน้ม HRV", "hrv_trend", "hrv"),
                                ("แนวโน้ม RHR", "rhr_trend", "rhr")):
             tl = trend_line(lbl, data.get(key), kind)
             if tl:
                 lines.append(tl)
-        
+
         sqi_data = data.get("sqi") or {}
         sqi_val = sqi_data.get("sqi")
         if sqi_val:
             band = sqi_data.get("band", "")
             icon = "🟢" if band == "good" else "🟡" if band == "fair" else "🔴" if band == "poor" else ""
-            lines.append(f"  📊 Sleep Quality (SQI): {fmt(sqi_val, '', 1)}/100 {icon}")
-            
+            lines.append(f"  คุณภาพการนอน (SQI): {fmt(sqi_val, '', 1)}/100 {icon}")
+
         sd_line = sleep_debt_line(data.get("sleep_debt"))
         if sd_line:
             lines.append(sd_line)
-            
+
         reg_line = sleep_regularity_line(data.get("sleep_reg"))
         if reg_line:
             lines.append(reg_line)
 
     # --- สุขภาพ & การฟื้นฟู ---
-    recovery = data.get("recovery_score")
-    illness = data.get("illness_risk")
     if recovery or illness:
         lines.append("")
-        lines.append("🩺 <b>การฟื้นฟู & สุขภาพ</b>")
+        lines.append("🩺 <b>การฟื้นฟูและสุขภาพ</b>")
         if recovery:
-            rec_score = recovery.get("recovery_score")
+            rec_score_v = recovery.get("recovery_score")
             rec_band = recovery.get("band", "")
             rec_label = "ดีมาก" if rec_band == "green" else "ปานกลาง" if rec_band == "yellow" else "ต่ำ"
-            lines.append(f"  🔋 Recovery Score: {fmt(rec_score, '', 1)}/100 ({rec_label})")
+            lines.append(f"  Recovery Score: {fmt(rec_score_v, '', 1)}/100 ({rec_label}) {_band_icon(rec_band)}")
         if illness:
             risk = illness.get("risk_level", "none")
             risk_label = "ไม่มี" if risk == "none" else "ต่ำ" if risk == "low" else "ปานกลาง" if risk == "medium" else "สูง"
-            lines.append(f"  ⚠️ ความเสี่ยงป่วย: {risk_label}")
+            risk_icon = "🟢" if risk == "none" else "🟡" if risk == "low" else "🔴"
+            lines.append(f"  ความเสี่ยงป่วย: {risk_label} {risk_icon}")
 
     # --- คำแนะนำการซ้อม ---
     train_advice = training_recommendation(data)
@@ -1039,25 +1144,24 @@ def build_message(data):
     # --- Strain / ACWR ---
     if strain:
         lines.append("")
-        lines.append("⚡ <b>Strain</b>")
+        lines.append("⚡ <b>Strain (ภาระที่ร่างกายรับในวันนี้)</b>")
         lines.append(f"  Day strain: {fmt(strain.get('day_strain'), '', 1)}")
         lines.append(f"  TRIMP: {fmt(strain.get('trimp'), '', 1)}")
         lines.append(acwr_line(strain.get("acwr"), data.get("history_days")))
 
     # --- บทวิเคราะห์เชิงลึก (Insight Analysis) ---
     insights = []
-    
+
     # ดึงค่าที่จำเป็นสำหรับกลุ่มต่างๆ
     rec_score = recovery.get("recovery_score") if recovery else 0
     duration_min = sleep.get("duration_min") if sleep else 0
     awake_min = sleep.get("awake_min") if sleep else 0
-    
-    import sleep_analysis
+
     efficiency = sleep_analysis.sleep_efficiency(sleep) if sleep else 0
-    
+
     deep_pct = sleep.get("deep_sleep_pct") if sleep else 0
     rem_pct = sleep.get("rem_sleep_pct") if sleep else 0
-    
+
     hrv_today = sleep.get("hrv") if sleep else None
     baselines_dict = data.get("baselines", {})
     hrv_baseline_raw = baselines_dict.get("hrv_ms")
@@ -1065,24 +1169,17 @@ def build_message(data):
     rhr_today = sleep.get("resting_hr") if sleep else None
     rhr_baseline_raw = baselines_dict.get("resting_hr")
     rhr_baseline = rhr_baseline_raw.get("baseline") if isinstance(rhr_baseline_raw, dict) else rhr_baseline_raw
-    
+
     stress_today = float(health.get("stress_score") or 0) if health else 0
-    
+
     # โหลด user_config (ถ้ามี)
     user_config = load_user_config()
-    
+
     # ดึง form, ctl (จาก data.json) สำหรับกลุ่ม B
-    form_val = None
-    ctl_now = None
-    try:
-        with open(os.path.join(os.path.dirname(__file__), "docs", "data.json"), "r", encoding="utf-8") as f:
-            full_data = json.load(f)
-            fitness = full_data.get("training_analytics", {}).get("fitness", {})
-            form_val = fitness.get("tsb")
-            ctl_now = fitness.get("ctl")
-    except Exception:
-        pass
-        
+    fitness_json = (load_data_json().get("training_analytics") or {}).get("fitness") or {}
+    form_val = fitness_json.get("tsb")
+    ctl_now = fitness_json.get("ctl")
+
     steps = float(health.get("steps") or 0) if health else 0
 
     # ประเมินตามกลุ่ม C: HRV × Stress × RHR (Illness/Overtraining Early Warning)
@@ -1102,14 +1199,14 @@ def build_message(data):
     # B2 — Form ติดลบมาก + Recovery ต่ำ
     if form_val is not None and form_val < -20 and rec_score > 0 and rec_score < 60:
         insights.append({"id": "B2", "level": "🔴", "priority": 2, "text": f"Form ติดลบสูง ({form_val:.1f}) ร่วมกับ Recovery ต่ำ ({rec_score:.0f}) แสดงว่าร่างกายสะสมความล้าเกินกว่าที่ฟื้นตัวทัน ควรพิจารณาลด intensity หรือเพิ่มวันพักในสัปดาห์นี้ เพื่อป้องกัน overtraining"})
-    
+
     # B4 — ข้อมูลกิจกรรมผิดปกติ (เช็คกิจกรรมทั้งหมดของวันนี้)
     if activities:
         for act in activities:
             a_dur = float(act.get("duration_s") or 0) / 60.0
             a_cals = float(act.get("calories") or 0)
             if a_dur == 0 and a_cals > 50:
-                s_name = sport_label(act.get("sport_type"))
+                s_name = esc(sport_label(act.get("sport_type")))
                 insights.append({"id": "B4", "level": "🟡", "priority": 3, "text": f"กิจกรรม {s_name} วันนี้บันทึกระยะเวลา 0 นาทีแต่มีแคลอรี่ {a_cals:.0f} kcal ข้อมูลอาจไม่สมบูรณ์จากการซิงค์ ควรตรวจสอบก่อนใช้คำนวณ training load สะสม"})
 
     # ประเมินกลุ่ม A: Recovery × Sleep
@@ -1117,41 +1214,48 @@ def build_message(data):
         # A1 — Recovery สูง + Sleep efficiency ต่ำ
         if rec_score >= 70 and efficiency > 0 and efficiency < 85:
             insights.append({"id": "A1", "level": "🟡", "priority": 3, "text": f"แม้ Recovery จะอยู่ในเกณฑ์ดี ({rec_score:.0f}/100) แต่ Sleep Efficiency ต่ำกว่ามาตรฐาน ({efficiency:.0f}%) แปลว่าเวลาที่อยู่บนเตียงมีส่วนที่ไม่ได้หลับสนิทค่อนข้างมาก ({awake_min} นาที) ควรสังเกตว่าเข้านอนเร็วเกินไปหรือมีการตื่นกลางดึกหรือไม่"})
-            
+
         # A2 — Deep sleep สูง + REM ต่ำ
         if deep_pct > 22 and rem_pct < 18:
             insights.append({"id": "A2", "level": "🟡", "priority": 3, "text": f"ร่างกายฟื้นฟูทางกายภาพได้ดี (Deep {deep_pct:.0f}%) แต่ REM ({rem_pct:.0f}%) อยู่ในระดับล่างของเกณฑ์ปกติ ซึ่งเกี่ยวข้องกับการฟื้นฟูทางสมองและความจำ หากเกิดต่อเนื่องหลายวันอาจสัมพันธ์กับความเครียดสะสมหรือแอลกอฮอล์ก่อนนอน"})
-            
+
         # A3 — HRV ต่ำกว่า baseline + Sleep ปกติ
         if hrv_today and hrv_baseline and efficiency >= 85:
             hrv_std_dev = hrv_baseline_raw.get("std_dev", 5) if isinstance(hrv_baseline_raw, dict) and hrv_baseline_raw.get("std_dev") else 5
             if hrv_today < (hrv_baseline - hrv_std_dev):
                 insights.append({"id": "A3", "level": "🟡", "priority": 3, "text": f"แม้จะนอนได้ดีคืนนี้ แต่ HRV ({hrv_today:.0f}ms) ต่ำกว่าค่าเฉลี่ย 7 วันของคุณ ({hrv_baseline:.0f}ms) การนอนดีไม่ได้แปลว่าระบบประสาทฟื้นตัวเต็มที่เสมอไป ควรสังเกตความเครียดจากปัจจัยอื่น เช่น งาน อาหาร หรือ training load สะสม"})
 
-        # A4 - หนี้การนอน (Sleep Debt) - Insight ใหม่
+        # A4 - หนี้การนอน (Sleep Debt)
         sleep_debt_data = data.get("sleep_debt")
         if sleep_debt_data and sleep_debt_data.get("debt_min"):
             debt = sleep_debt_data["debt_min"]
-            if debt >= 60 and debt < 180: # Yellow range: เริ่มสะสม
-                debt_h, debt_m = divmod(debt, 60)
-                debt_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
-                daily_increase_min = int(debt / sleep_debt_data["nights"]) if sleep_debt_data["nights"] > 0 else 0
-                insights.append({"id": "A4", "level": "🟡", "priority": 3, "text": f"มีหนี้การนอนสะสม {debt_str} ในรอบ 7 วัน แนะนำให้ลองเพิ่มเวลานอนคืนละ {daily_increase_min} นาที หรือเข้านอนเร็วขึ้น"})
-            elif debt >= 180: # Orange/Red range: ค่อนข้างมาก / สูง
-                debt_h, debt_m = divmod(debt, 60)
-                debt_str = f"{debt_h} ชม {debt_m} นาที" if debt_h > 0 else f"{debt_m} นาที"
-                daily_increase_min = int(debt / sleep_debt_data["nights"]) if sleep_debt_data["nights"] > 0 else 0
-                insights.append({"id": "A4", "level": "🟠", "priority": 2, "text": f"หนี้การนอนสะสมมากถึง {debt_str} ในรอบ 7 วัน แสดงว่าร่างกายพักผ่อนไม่เพียงพออย่างต่อเนื่อง ควรจัดตารางการนอนใหม่ เพิ่มเวลานอนคืนละ {daily_increase_min} นาที และงดกิจกรรมที่กระตุ้นการตื่นตัวก่อนนอน"})
+            debt_str = minutes_to_hm(debt)
+            daily_increase_min = int(debt / sleep_debt_data["nights"]) if sleep_debt_data["nights"] > 0 else 0
+            if debt >= 60 and debt < 180:  # Yellow range: เริ่มสะสม
+                insights.append({"id": "A4", "level": "🟡", "priority": 3,
+                                 "title": f"มีหนี้การนอนสะสม {debt_str} ในรอบ 7 วัน",
+                                 "detail": [f"แนะนำเพิ่มเวลานอนคืนละ {daily_increase_min} นาที หรือเข้านอนเร็วขึ้น"]})
+            elif debt >= 180:  # Orange/Red range: ค่อนข้างมาก / สูง
+                insights.append({"id": "A4", "level": "🟠", "priority": 2,
+                                 "title": f"หนี้การนอนสะสมมากถึง {debt_str} ในรอบ 7 วัน",
+                                 "detail": ["แสดงว่าร่างกายพักผ่อนไม่เพียงพออย่างต่อเนื่อง",
+                                            f"ควรจัดตารางการนอนใหม่ เพิ่มเวลานอนคืนละ {daily_increase_min} นาที และงดกิจกรรมที่กระตุ้นการตื่นตัวก่อนนอน"]})
 
-        # A5 - ความสม่ำเสมอการนอน (Sleep Regularity) - Insight ใหม่
+        # A5 - ความสม่ำเสมอการนอน (Sleep Regularity)
         sleep_reg_data = data.get("sleep_reg")
         if sleep_reg_data and sleep_reg_data.get("start_sd_min") is not None:
             avg_sd = (sleep_reg_data["start_sd_min"] + sleep_reg_data["end_sd_min"]) / 2
-            if avg_sd > 30 and avg_sd <= 60: # Yellow range: ค่อนข้างสม่ำเสมอ
-                insights.append({"id": "A5", "level": "🟡", "priority": 3, "text": f"เวลานอน-ตื่นเฉลี่ยแกว่งประมาณ ±{int(avg_sd)} นาทีในรอบ 7 วัน ความสม่ำเสมอส่งผลโดยตรงต่อคุณภาพการนอนและ HRV พยายามรักษาเวลานอน-ตื่นให้ใกล้เคียงกันทุกวัน โดยเฉพาะวันหยุด"})
-            elif avg_sd > 60: # Red range: แกว่งไปมา
-                insights.append({"id": "A5", "level": "🔴", "priority": 2, "text": f"เวลานอน-ตื่นเฉลี่ยแกว่งมากถึง ±{int(avg_sd)} นาทีในรอบ 7 วัน ความไม่สม่ำเสมอนี้รบกวนจังหวะ Circadian Rhythm อย่างมาก ทำให้คุณภาพการนอนแย่ลงและ Recovery ต่ำ ควรตั้งเวลาเข้านอน-ตื่นให้สม่ำเสมอที่สุด"})
-
+            avg_sd_txt = int(round(avg_sd))   # ปัดเศษเหมือนบรรทัดความสม่ำเสมอ ค่าจะตรงกัน
+            if avg_sd > 30 and avg_sd <= 60:  # Yellow range: ค่อนข้างสม่ำเสมอ
+                insights.append({"id": "A5", "level": "🟡", "priority": 3,
+                                 "title": f"เวลานอน-ตื่นเฉลี่ยแกว่งประมาณ ±{avg_sd_txt} นาทีในรอบ 7 วัน",
+                                 "detail": ["ความสม่ำเสมอส่งผลโดยตรงต่อคุณภาพการนอนและ HRV",
+                                            "พยายามรักษาเวลานอน-ตื่นให้ใกล้เคียงกันทุกวัน โดยเฉพาะวันหยุด"]})
+            elif avg_sd > 60:  # Red range: แกว่งไปมา
+                insights.append({"id": "A5", "level": "🔴", "priority": 2,
+                                 "title": f"เวลานอน-ตื่นเฉลี่ยแกว่งมากถึง ±{avg_sd_txt} นาทีในรอบ 7 วัน",
+                                 "detail": ["ความไม่สม่ำเสมอนี้รบกวนจังหวะ Circadian Rhythm อย่างมาก ทำให้คุณภาพการนอนแย่ลงและ Recovery ต่ำ",
+                                            "ควรตั้งเวลาเข้านอน-ตื่นให้สม่ำเสมอที่สุด"]})
 
     history = data.get("history", [])
     if history:
@@ -1172,7 +1276,7 @@ def build_message(data):
         if len(history) >= 5:
             # B1 — Form สูงต่อเนื่อง + steps ต่ำ
             form_high_days = sum(1 for d in history[-5:] if (d.get("tsb") or 0) > 10)
-            
+
             # ตรวจสอบว่าเป็นช่วง Taper ของ race_prep หรือไม่
             is_taper = False
             if user_config and user_config.get("user_goal") == "race_prep":
@@ -1193,12 +1297,13 @@ def build_message(data):
             bad_sleep_days = sum(1 for d in history[-5:] if d.get("sleep_efficiency") and d.get("sleep_efficiency") < 85)
             if bad_sleep_days >= 5:
                 insights.append({"id": "E2", "level": "🔴", "priority": 2, "text": f"Sleep Efficiency ต่ำกว่า 85% ติดต่อกัน 5 วัน คุณภาพการนอนแย่ลงสะสม แนะนำปรับสภาพแวดล้อมห้องนอนหรือลดสิ่งกระตุ้นก่อนนอน"})
-                
+
         if len(history) >= 3:
             # E1 — Recovery ลดลงต่อเนื่อง 3 วัน
             rec_trends = [d.get("recovery_score") or 0 for d in history[-3:]]
             if rec_trends[0] > rec_trends[1] > rec_trends[2]:
-                if len(history) >= 5 and sum(1 for i in range(len(history)-5, len(history)-1) if history[i].get("recovery_score") > history[i+1].get("recovery_score")) >= 4:
+                # (or 0) กัน TypeError เมื่อบางวันไม่มีค่า recovery_score — สอดคล้องกับ rec_trends ด้านบน
+                if len(history) >= 5 and sum(1 for i in range(len(history)-5, len(history)-1) if (history[i].get("recovery_score") or 0) > (history[i+1].get("recovery_score") or 0)) >= 4:
                     insights.append({"id": "E1_5", "level": "🔴", "priority": 1, "text": f"Recovery Score ลดลงติดต่อกัน 5 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ร่างกายดิ่งสะสมมาก ควรพักการซ้อมหนักทันที"})
                 else:
                     insights.append({"id": "E1_3", "level": "🟡", "priority": 3, "text": f"Recovery Score ลดลงติดต่อกัน 3 วัน (ล่าสุด {rec_trends[2]:.0f}/100) ระวังร่างกายดิ่งสะสม ควรพิจารณาพักการซ้อมหนัก"})
@@ -1233,13 +1338,16 @@ def build_message(data):
     if insights:
         # Sort insights by priority (1 is highest)
         insights.sort(key=lambda x: x.get("priority", 99) if isinstance(x, dict) else 99)
-        
+
         lines.append("")
         lines.append("💡 <b>บทวิเคราะห์เชิงลึก (Recovery × Sleep × Load)</b>")
         # กรองแสดงผลแค่สูงสุด 3 ข้อความ เพื่อไม่ให้เกิด alert fatigue
         for ins in insights[:3]:
             if isinstance(ins, dict):
-                lines.append(f"  • {ins['level']} {ins['text']}")
+                title = ins.get("title") or ins.get("text", "")
+                lines.append(f"{ins['level']} {title}")
+                for d in ins.get("detail") or []:
+                    lines.append(f"  {d}")
             else:
                 lines.append(f"  • {ins}")
 
@@ -1247,13 +1355,13 @@ def build_message(data):
     if journal:
         flags = []
         if journal.get("alcohol_units"):
-            flags.append(f"🍺 แอลกอฮอล์ {journal['alcohol_units']} หน่วย")
+            flags.append(f"🍺 แอลกอฮอล์ {esc(journal['alcohol_units'])} หน่วย")
         if journal.get("caffeine_after_14"):
             flags.append("☕ กาแฟหลังบ่าย 2")
         if journal.get("late_meal"):
             flags.append("🍽 กินดึก")
         if journal.get("screen_before_bed_min"):
-            flags.append(f"📱 จอก่อนนอน {journal['screen_before_bed_min']} นาที")
+            flags.append(f"📱 จอก่อนนอน {esc(journal['screen_before_bed_min'])} นาที")
         if journal.get("exercise_evening"):
             flags.append("🏋️ ออกกำลังกายตอนเย็น")
         if journal.get("room_temp_hot"):
@@ -1262,13 +1370,24 @@ def build_message(data):
             lines.append("")
             lines.append("📝 <b>Journal</b>: " + ", ".join(flags))
         if journal.get("notes"):
-            lines.append(f"  หมายเหตุ: {journal['notes']}")
+            lines.append(f"  หมายเหตุ: {esc(journal['notes'])}")
 
-    if not (activities or health or sleep or strain):
-        lines.append("")
-        lines.append("⚠️ ไม่พบข้อมูลใดๆ ของวันนี้ใน database — sync อาจยังไม่สำเร็จ")
+    # ไม่มีเนื้อหาเลย -> ไม่ส่งข้อความที่ 2
+    if not any(l.strip() for l in lines):
+        return None
 
-    return "\n".join(lines)
+    header = [f"😴 <b>COROS Daily Summary (ต่อ)</b>", th_date(date)]
+    return "\n".join(header + lines)
+
+
+def build_messages(data):
+    """คืน list ของข้อความที่จะส่ง (ข้อความที่ว่างจะถูกตัดออก)"""
+    return [m for m in (build_part1(data), build_part2(data)) if m]
+
+
+def build_message(data):
+    """รวมเป็นข้อความเดียว (เผื่อมีโค้ดอื่นเรียกใช้แบบเดิม)"""
+    return "\n\n".join(build_messages(data))
 
 
 # =============================================================================
@@ -1277,13 +1396,13 @@ def build_message(data):
 
 def send_telegram_message(text, bot_token, chat_id):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    
+
     # แบ่งข้อความถ้ายาวเกิน 4096 ตัวอักษร
     max_len = 4000
     lines = text.split("\n")
     chunks = []
     current_chunk = ""
-    
+
     for line in lines:
         # +1 เผื่อ character \n
         if len(current_chunk) + len(line) + 1 > max_len:
@@ -1291,10 +1410,10 @@ def send_telegram_message(text, bot_token, chat_id):
             current_chunk = line + "\n"
         else:
             current_chunk += line + "\n"
-            
+
     if current_chunk.strip():
         chunks.append(current_chunk)
-        
+
     responses = []
     for chunk in chunks:
         resp = requests.post(
@@ -1309,8 +1428,26 @@ def send_telegram_message(text, bot_token, chat_id):
         )
         resp.raise_for_status()
         responses.append(resp.json())
-        
+
     return responses[-1] if responses else None
+
+
+def send_parts(parts, bot_token, chat_id):
+    """
+    ส่งทีละข้อความ พร้อมเลขหน้า (i/n) เมื่อมีมากกว่า 1 ข้อความ
+    ถ้าข้อความไหนล้ม จะ log แล้วส่งข้อความที่เหลือต่อ คืนค่า (จำนวนทั้งหมด, list เลขข้อความที่ล้ม)
+    """
+    parts = [p for p in parts if p]
+    n = len(parts)
+    failed = []
+    for i, part in enumerate(parts, 1):
+        footer = f"\n\n({i}/{n})" if n > 1 else ""
+        try:
+            send_telegram_message(part + footer, bot_token, chat_id)
+        except requests.exceptions.RequestException as e:
+            print(f"ส่งข้อความที่ {i}/{n} ไม่สำเร็จ: {e}")
+            failed.append(i)
+    return n, failed
 
 
 # =============================================================================
@@ -1327,15 +1464,15 @@ def main():
         sys.exit(0)
 
     data = gather_today_summary()
-    message = build_message(data)
+    parts = build_messages(data)
 
-    try:
-        send_telegram_message(message, bot_token, chat_id)
-        print("ส่งสรุปเข้า Telegram สำเร็จ")
-    except requests.exceptions.RequestException as e:
-        print(f"ส่ง Telegram ไม่สำเร็จ: {e}")
-        # ไม่ raise ต่อ เพื่อไม่ให้ step นี้ทำให้ workflow ทั้งหมด fail
-        sys.exit(0)
+    n, failed = send_parts(parts, bot_token, chat_id)
+    if not failed:
+        print(f"ส่งสรุปเข้า Telegram สำเร็จ ({n} ข้อความ)")
+    else:
+        print(f"ส่ง Telegram ไม่สำเร็จ {len(failed)}/{n} ข้อความ (ข้อความที่ {failed})")
+    # ไม่ raise ต่อ เพื่อไม่ให้ step นี้ทำให้ workflow ทั้งหมด fail
+    sys.exit(0)
 
 
 if __name__ == "__main__":
