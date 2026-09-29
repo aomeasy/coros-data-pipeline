@@ -151,7 +151,14 @@ def main():
                 continue
             resp = requests.get(url, timeout=120)
             resp.raise_for_status()
-            rows = [(aid, *r) for r in parse_fit(resp.content)]
+            try:
+                rows = [(aid, *r) for r in parse_fit(resp.content)]
+            except Exception as pe:
+                print(f"{aid}: parse ไม่ได้ ({pe}) บันทึก parse_error แล้วข้าม")
+                conn.execute("INSERT OR REPLACE INTO fit_imported VALUES (?,?,?,?)",
+                             (aid, "parse_error", 0, now))
+                conn.commit()
+                continue
             conn.executemany(
                 "INSERT OR IGNORE INTO activity_records "
                 "(activity_id,ts,lat,lon,hr,speed,altitude,cadence,distance,power) "
