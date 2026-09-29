@@ -60,23 +60,60 @@ def first_url(obj):
                 return u
     return None
 
+def _row(ts, lat, lon, hr, speed, alt, cad, dist, pwr):
+    return (ts.isoformat(),
+            lat * 180 / 2**31 if lat is not None else None,
+            lon * 180 / 2**31 if lon is not None else None,
+            hr, speed, alt, cad, dist, pwr)
+
 
 def parse_fit(data):
+    """ลอง garmin-fit-sdk ก่อน (ทนไฟล์แปลก) ถ้าไม่มี/พังค่อยใช้ fitparse"""
+    try:
+        from garmin_fit_sdk import Decoder, Stream
+    except ImportError:
+        Decoder = None
+
+    if Decoder:
+        decoder = Decoder(Stream.from_byte_array(bytearray(data)))
+        messages, errors = decoder.read(
+            apply_scale_and_offset=True,
+            convert_datetimes_to_dates=True,
+            convert_types_to_strings=False,
+            enable_crc_check=False,
+            expand_sub_fields=True,
+            expand_components=True,
+            merge_heart_rates=True,
+        )
+        records = messages.get("record_mesgs", [])
+        if errors:
+            print(f"  decoder warnings: {errors[:2]}")
+        if records:
+            out = []
+            for d in records:
+                if not d.get("timestamp"):
+                    continue
+                out.append(_row(
+                    d["timestamp"], d.get("position_lat"), d.get("position_long"),
+                    d.get("heart_rate"),
+                    d.get("enhanced_speed", d.get("speed")),
+                    d.get("enhanced_altitude", d.get("altitude")),
+                    d.get("cadence"), d.get("distance"), d.get("power")))
+            return out
+
+    # สำรอง: fitparse
+    out = []
     for m in FitFile(io.BytesIO(data)).get_messages("record"):
         d = {f.name: f.value for f in m}
         if not d.get("timestamp"):
             continue
-        lat, lon = d.get("position_lat"), d.get("position_long")
-        yield (
-            d["timestamp"].isoformat(),
-            lat * 180 / 2**31 if lat is not None else None,
-            lon * 180 / 2**31 if lon is not None else None,
+        out.append(_row(
+            d["timestamp"], d.get("position_lat"), d.get("position_long"),
             d.get("heart_rate"),
             d.get("enhanced_speed", d.get("speed")),
             d.get("enhanced_altitude", d.get("altitude")),
-            d.get("cadence"), d.get("distance"), d.get("power"),
-        )
-
+            d.get("cadence"), d.get("distance"), d.get("power")))
+    return out
 
 def main():
     conn = coros_db.get_conn()
