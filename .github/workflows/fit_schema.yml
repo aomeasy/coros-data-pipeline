@@ -1,0 +1,31 @@
+name: FIT schema probe
+
+# รันมือเท่านั้น (Actions -> FIT schema probe -> Run workflow)
+# แค่ล็อกอิน COROS แล้วพิมพ์โครงสร้าง (schema) ของ tool ที่เกี่ยวกับไฟล์ FIT ลง log
+# ไม่ดึงข้อมูลสุขภาพ ไม่แตะ D1 ไม่แตะ coros_cache.db ไม่ commit อะไร
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install COROS-MCP
+        run: npm install -g coros-mcp
+
+      - name: Login (same method as the daily sync)
+        env:
+          COROS_EMAIL: ${{ secrets.COROS_EMAIL }}
+          COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
+        run: $env:COROS_PASSWORD | npx coros-mcp login --legacy --username $env:COROS_EMAIL
+
+      - name: Print schema of queryActivityFitFileDownloadUrls
+        run: npx coros-mcp describe-tool --tool queryActivityFitFileDownloadUrls
+
+      - name: Print schema of downloadActivityFitFiles
+        run: npx coros-mcp describe-tool --tool downloadActivityFitFiles
