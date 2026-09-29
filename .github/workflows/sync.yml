@@ -70,7 +70,13 @@ jobs:
           COROS_PASSWORD: ${{ secrets.COROS_PASSWORD }}
           PYTHONIOENCODING: utf-8
         run: python coros_daily_sync.py
-
+        
+      - name: Sync FIT records
+        continue-on-error: true      # FIT พลาดไม่ต้องทำให้ sync หลักล้ม
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python fit_sync.py
+        
       - name: Compute Strain / ACWR
         env:
           PYTHONIOENCODING: utf-8
