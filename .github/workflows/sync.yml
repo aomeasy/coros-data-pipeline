@@ -2,10 +2,8 @@ name: COROS Daily Sync
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # 06:30 ICT = 23:30 UTC (วันก่อนหน้า)
-    - cron: '0 11 * * *'   # 18:00 ICT = 11:00 UTC
-    - cron: '0 15 * * *'   # 22:00 ICT = 15:00 UTC
-  workflow_dispatch:
+    - cron: '0 2 * * *'  # รันวันละ 1 ครั้ง เวลา 09:00 น. (เวลาไทย / 02:00 UTC)
+  workflow_dispatch:     # เก็บบรรทัดนี้ไว้ เพื่อให้กดรันเอง (Manual) หน้าเว็บได้เหมือนเดิม
     inputs:
       bootstrap:
         description: 'ครั้งแรกครั้งเดียว: ส่ง coros_cache.db ที่ commit อยู่ขึ้น D1 ก่อน pull'
